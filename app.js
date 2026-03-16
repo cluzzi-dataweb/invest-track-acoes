@@ -6,7 +6,8 @@ const STORAGE_KEYS = {
   alerts: "b3app_alerts",
   settings: "b3app_settings",
   trailingHighs: "b3app_trailing_highs",
-  dismissedTickers: "b3app_dismissed_tickers"
+  dismissedTickers: "b3app_dismissed_tickers",
+  notifyPromptShown: "b3app_notify_prompt_shown"
 };
 
 const SELL_SIGNAL_TYPES = {
@@ -1023,6 +1024,34 @@ function maybeNotifySellTarget(alert) {
     body: `${alert.message} | Preco atual: ${currentPrice}`,
     tag: `sell-target-${ticker}`
   });
+}
+
+async function ensureNotificationPermissionPrompt() {
+  if (!state.settings.notifySellTarget) return;
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission !== "default") return;
+
+  const alreadyPrompted = localStorage.getItem(STORAGE_KEYS.notifyPromptShown) === "1";
+  if (alreadyPrompted) return;
+
+  const wants = window.confirm(
+    "Deseja ativar notificacoes do navegador para avisos de venda?\n\n" +
+    "Ao aceitar, o app vai pedir permissao de notificacao no Windows/navegador."
+  );
+
+  localStorage.setItem(STORAGE_KEYS.notifyPromptShown, "1");
+  if (!wants) return;
+
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      window.alert(
+        "Notificacoes nao foram ativadas. Para receber avisos, libere notificacoes para este site no navegador e no Windows."
+      );
+    }
+  } catch {
+    // ignore permission errors
+  }
 }
 
 function ensureTickerAlert(ticker) {
@@ -2128,6 +2157,7 @@ async function boot() {
   createAppLayout();
   render();
   updateStatusLine();
+  await ensureNotificationPermissionPrompt();
 
   // Deferred render: fires when user leaves a form field after an update was skipped
   document.addEventListener("focusout", () => {
