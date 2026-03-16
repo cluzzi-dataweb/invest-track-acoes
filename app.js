@@ -156,6 +156,9 @@ const state = {
     backendTop10Endpoint: "/api/market/top10-analysts",
     backendAnalystEndpoint: "/api/market/analyst",
     notifySellTarget: true,
+    opportunityMinUpsidePct: 25,
+    opportunityMinAnalysts: 5,
+    opportunityRequireBuy: true,
     localModeAnalystMessage: "dados de analistas indisponiveis no modo local"
   },
   trailingHighs: {},
@@ -1067,6 +1070,42 @@ function ensureTickerAlert(ticker) {
   });
 }
 
+function isPositiveAnalystRecommendation(rec) {
+  const r = String(rec || "").toLowerCase();
+  return (
+    r === "buy" ||
+    r === "strong buy" ||
+    r === "strongbuy" ||
+    r === "outperform" ||
+    r === "overweight"
+  );
+}
+
+function getAnalystOpportunitySignal(ticker, quote, analyst) {
+  const currentPrice = toNumber(quote?.price, NaN);
+  const targetMean = toNumber(analyst?.targetMean, NaN);
+  const analystsCount = toNumber(analyst?.analystsCount, 0);
+  const upsidePct = calculateUpside(currentPrice, targetMean);
+
+  const minUpsidePct = Math.max(5, toNumber(state.settings.opportunityMinUpsidePct, 25));
+  const minAnalysts = Math.max(1, toNumber(state.settings.opportunityMinAnalysts, 5));
+  const requireBuy = !!state.settings.opportunityRequireBuy;
+  const recOk = !requireBuy || isPositiveAnalystRecommendation(analyst?.recommendation);
+
+  if (!Number.isFinite(upsidePct) || !Number.isFinite(currentPrice) || !Number.isFinite(targetMean)) return null;
+  if (!analyst?.available) return null;
+  if (!recOk) return null;
+  if (upsidePct < minUpsidePct) return null;
+  if (analystsCount < minAnalysts) return null;
+
+  return {
+    ticker,
+    type: "oportunidade analistas",
+    message: `${ticker}: upside ${fmtPct(upsidePct)} | ${analystsCount} analistas`,
+    priority: "alta"
+  };
+}
+
 function syncPortfolioAlerts() {
   const tickers = [...new Set(state.portfolio.map((a) => normalizeTicker(a.ticker)).filter(Boolean))];
   const tickerSet = new Set(tickers);
@@ -1179,6 +1218,11 @@ async function updateAllData() {
 
       const inPortfolio = state.portfolio.find((item) => normalizeTicker(item.ticker) === ticker);
       if (inPortfolio) {
+        const opportunitySignal = getAnalystOpportunitySignal(ticker, quote, analyst);
+        if (opportunitySignal) {
+          addAlert(opportunitySignal);
+        }
+
         const buySignal = checkBuyMoreSignal(inPortfolio, quote.price);
         if (buySignal) {
           addAlert({
@@ -1783,6 +1827,20 @@ function renderSettingsPanel() {
             Notificar quando atingir preco esperado de venda
           </label>
         </div>
+        <div class="field">
+          <label>Upside minimo para oportunidade (%)</label>
+          <input name="opportunityMinUpsidePct" type="number" min="5" step="1" value="${toNumber(state.settings.opportunityMinUpsidePct, 25)}" />
+        </div>
+        <div class="field">
+          <label>Minimo de analistas</label>
+          <input name="opportunityMinAnalysts" type="number" min="1" step="1" value="${toNumber(state.settings.opportunityMinAnalysts, 5)}" />
+        </div>
+        <div class="field span-2">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input name="opportunityRequireBuy" type="checkbox" ${state.settings.opportunityRequireBuy ? "checked" : ""} />
+            Exigir recomendacao favoravel (compra/outperform)
+          </label>
+        </div>
       </div>
       <div class="actions">
         <button class="primary" type="submit">Salvar configuracoes</button>
@@ -1958,6 +2016,9 @@ function bindEvents() {
       state.settings.backendTop10Endpoint = String(fd.get("backendTop10Endpoint") || "/api/market/top10-analysts").trim();
       state.settings.backendAnalystEndpoint = String(fd.get("backendAnalystEndpoint") || "/api/market/analyst").trim();
       state.settings.notifySellTarget = fd.get("notifySellTarget") === "on";
+      state.settings.opportunityMinUpsidePct = Math.max(5, toNumber(fd.get("opportunityMinUpsidePct"), 25));
+      state.settings.opportunityMinAnalysts = Math.max(1, toNumber(fd.get("opportunityMinAnalysts"), 5));
+      state.settings.opportunityRequireBuy = fd.get("opportunityRequireBuy") === "on";
 
       if (state.settings.notifySellTarget && typeof Notification !== "undefined" && Notification.permission === "default") {
         Notification.requestPermission().catch(() => {});
