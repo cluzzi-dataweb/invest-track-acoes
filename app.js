@@ -1302,7 +1302,7 @@ function getSummaryStats(rows) {
   const current = rows.reduce((acc, row) => acc + row.currentValue, 0);
   const pnl = current - invested;
   const pnlPct = invested > 0 ? (pnl / invested) * 100 : 0;
-  const activeAlerts = state.alerts.filter((a) => !a.read).length;
+  const activeAlerts = state.alerts.length;
 
   return {
     invested,
@@ -1563,8 +1563,6 @@ function renderAlertsPanel() {
   const panel = document.getElementById("panel-alerts");
   if (!panel) return;
 
-  const unread = state.alerts.filter((a) => !a.read).length;
-
   const rowsHtml = state.alerts
     .map((alert) => {
       const ticker = normalizeTicker(alert.ticker);
@@ -1578,10 +1576,9 @@ function renderAlertsPanel() {
       const upside = calculateUpside(currentPrice, targetMean);
       const recBadge = alertOrientationBadge(alert.type, analyst);
       const analystCount = analyst?.available ? toNumber(analyst.analystsCount, 0) : 0;
-      const rowClass = alert.read ? "alert-row read" : "alert-row unread";
 
       return `
-        <tr class="${rowClass}">
+        <tr class="alert-row">
           <td class="mono">${escapeHtml(ticker)}</td>
           <td>${alertPriorityBadge(alert.priority)}</td>
           <td>${escapeHtml(alert.type)}</td>
@@ -1595,7 +1592,6 @@ function renderAlertsPanel() {
           <td>${asset ? fmtCurrency(toNumber(asset.buyMorePrice, NaN)) : "-"}</td>
           <td>${fmtDate(alert.createdAt)}</td>
           <td>
-            ${alert.read ? '<span class="muted-text">Lido</span>' : '<button data-action="mark-alert-read" data-id="' + alert.id + '">Marcar como lido</button>'}
             <button class="danger" data-action="remove-alert-ticker" data-ticker="${escapeHtml(ticker)}">Remover acao</button>
           </td>
         </tr>
@@ -1604,7 +1600,7 @@ function renderAlertsPanel() {
     .join("");
 
   panel.innerHTML = `
-    <h2 class="panel-title">Alertas ${unread > 0 ? `<span class="badge high" style="font-size:0.78rem;vertical-align:middle">${unread} nao lidos</span>` : ""}</h2>
+    <h2 class="panel-title">Alertas</h2>
     <form id="addAlertForm">
       <div class="form-grid">
         <div class="field">
@@ -1644,7 +1640,6 @@ function renderAlertsPanel() {
       </div>
     </form>
     <div class="actions" style="margin-top:8px">
-      <button id="btnMarkAllRead">Marcar todos como lidos</button>
       <button class="danger" id="btnClearAlerts">Limpar historico</button>
     </div>
     <div class="table-wrap">
@@ -2092,18 +2087,6 @@ function bindEvents() {
 
   const panelAlerts = document.getElementById("panel-alerts");
   if (panelAlerts) {
-    panelAlerts.querySelectorAll("button[data-action='mark-alert-read']").forEach((button) => {
-      button.onclick = () => {
-        const id = button.dataset.id;
-        const found = state.alerts.find((a) => a.id === id);
-        if (found) {
-          found.read = true;
-          saveAlerts();
-          render();
-        }
-      };
-    });
-
     panelAlerts.querySelectorAll("button[data-action='remove-alert-ticker']").forEach((button) => {
       button.onclick = () => {
         const ticker = normalizeTicker(button.dataset.ticker);
@@ -2119,15 +2102,6 @@ function bindEvents() {
         render();
       };
     });
-
-    const btnMarkAllRead = document.getElementById("btnMarkAllRead");
-    if (btnMarkAllRead) {
-      btnMarkAllRead.onclick = () => {
-        state.alerts = state.alerts.map((a) => ({ ...a, read: true }));
-        saveAlerts();
-        render();
-      };
-    }
 
     const btnClearAlerts = document.getElementById("btnClearAlerts");
     if (btnClearAlerts) {
