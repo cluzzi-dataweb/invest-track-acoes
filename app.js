@@ -1603,6 +1603,33 @@ function alertOrientationBadge(alertType, analyst) {
   return '<span class="badge hold">&#9654; MANTER</span>';
 }
 
+function alertTone(type) {
+  const t = String(type || "").toLowerCase();
+
+  if (
+    t === SELL_SIGNAL_TYPES.TARGET.toLowerCase() ||
+    t === SELL_SIGNAL_TYPES.TRAILING.toLowerCase() ||
+    t === SELL_SIGNAL_TYPES.STOP_LOSS.toLowerCase() ||
+    t === SELL_SIGNAL_TYPES.VOLUME_DROP.toLowerCase()
+  ) return "sell";
+
+  if (t === "recompra atingida" || t === "oportunidade analistas") return "buy";
+
+  if (
+    t === SELL_SIGNAL_TYPES.RSI.toLowerCase() ||
+    t === SELL_SIGNAL_TYPES.TREND.toLowerCase() ||
+    t === SELL_SIGNAL_TYPES.ANALYST_NEAR_TARGET.toLowerCase()
+  ) return "warn";
+
+  return "hold";
+}
+
+function alertTypeBadge(type) {
+  const tone = alertTone(type);
+  const cls = tone === "sell" ? "sell" : tone === "buy" ? "buy" : tone === "warn" ? "warn" : "hold";
+  return `<span class="badge ${cls}">${escapeHtml(type || "-")}</span>`;
+}
+
 function renderAlertsPanel() {
   const panel = document.getElementById("panel-alerts");
   if (!panel) return;
@@ -1620,20 +1647,29 @@ function renderAlertsPanel() {
       const upside = calculateUpside(currentPrice, targetMean);
       const recBadge = alertOrientationBadge(alert.type, analyst);
       const analystCount = analyst?.available ? toNumber(analyst.analystsCount, 0) : 0;
+      const buyMorePrice = asset ? toNumber(asset.buyMorePrice, NaN) : NaN;
+      const tone = alertTone(alert.type);
+
+      const buyOpportunity = Number.isFinite(currentPrice) && Number.isFinite(buyMorePrice) && currentPrice <= buyMorePrice;
+      const targetReached = Number.isFinite(currentPrice) && Number.isFinite(targetMean) && currentPrice >= targetMean;
+      const currentPriceClass = buyOpportunity ? "positive" : targetReached ? "warn-text" : "";
+      const targetMeanClass = Number.isFinite(currentPrice) && Number.isFinite(targetMean)
+        ? (targetMean > currentPrice ? "positive" : "negative")
+        : "";
 
       return `
-        <tr class="alert-row">
+        <tr class="alert-row tone-${tone}">
           <td class="mono">${escapeHtml(ticker)}</td>
           <td>${alertPriorityBadge(alert.priority)}</td>
-          <td>${escapeHtml(alert.type)}</td>
+          <td>${alertTypeBadge(alert.type)}</td>
           <td>${escapeHtml(alert.message)}</td>
-          <td>${fmtCurrency(currentPrice)}</td>
-          <td>${Number.isFinite(targetMean) ? fmtCurrency(targetMean) : "-"}</td>
+          <td class="${currentPriceClass}">${fmtCurrency(currentPrice)}</td>
+          <td class="${targetMeanClass}">${Number.isFinite(targetMean) ? fmtCurrency(targetMean) : "-"}</td>
           <td>${Number.isFinite(targetMax) ? fmtCurrency(targetMax) : "-"}</td>
           <td class="${toNumber(upside, 0) >= 0 ? "positive" : "negative"}">${fmtPct(upside)}</td>
           <td>${recBadge}</td>
           <td>${analystCount > 0 ? analystCount + " analistas" : "-"}</td>
-          <td>${asset ? fmtCurrency(toNumber(asset.buyMorePrice, NaN)) : "-"}</td>
+          <td class="${buyOpportunity ? "positive" : ""}">${Number.isFinite(buyMorePrice) ? fmtCurrency(buyMorePrice) : "-"}</td>
           <td>${fmtDate(alert.createdAt)}</td>
           <td>
             <button class="danger" data-action="remove-alert-ticker" data-ticker="${escapeHtml(ticker)}">Remover acao</button>

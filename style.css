@@ -381,16 +381,32 @@ td.negative {
   border-color: #334155;
 }
 
-.alert-row.unread td {
-  background: rgba(46, 168, 255, 0.04);
+.alert-row td {
+  transition: background-color 140ms ease;
 }
 
-.alert-row.unread td:first-child {
+.alert-row:hover td {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.alert-row.tone-buy td:first-child {
+  border-left: 3px solid rgba(56, 211, 159, 0.65);
+}
+
+.alert-row.tone-sell td:first-child {
+  border-left: 3px solid rgba(255, 107, 107, 0.65);
+}
+
+.alert-row.tone-warn td:first-child {
+  border-left: 3px solid rgba(255, 202, 92, 0.7);
+}
+
+.alert-row.tone-hold td:first-child {
   border-left: 3px solid rgba(46, 168, 255, 0.6);
 }
 
-.alert-row.read td {
-  opacity: 0.55;
+.warn-text {
+  color: var(--yellow);
 }
 
 .muted-text {
