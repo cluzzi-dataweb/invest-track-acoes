@@ -1382,7 +1382,45 @@ function renderAlertsPanel() {
 
   panel.innerHTML = `
     <h2 class="panel-title">Alertas ${unread > 0 ? `<span class="badge high" style="font-size:0.78rem;vertical-align:middle">${unread} nao lidos</span>` : ""}</h2>
-    <div class="actions">
+    <form id="addAlertForm">
+      <div class="form-grid">
+        <div class="field">
+          <label>Acao</label>
+          <input name="name" required placeholder="Buscar acao..." autocomplete="off" />
+        </div>
+        <div class="field">
+          <label>Ticker</label>
+          <input name="ticker" required placeholder="PETR4" maxlength="12" style="text-transform:uppercase" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label>Tipo</label>
+          <select name="type">
+            <option value="alerta manual">Alerta manual</option>
+            <option value="monitorar">Monitorar</option>
+            <option value="recompra atingida">Recompra atingida</option>
+            <option value="stop loss">Stop loss</option>
+            <option value="alvo atingido">Alvo atingido</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Mensagem / Observacao</label>
+          <input name="message" placeholder="Ex: acompanhar suporte em 30.00" />
+        </div>
+        <div class="field">
+          <label>Prioridade</label>
+          <select name="priority">
+            <option value="media">Media</option>
+            <option value="alta">Alta</option>
+            <option value="baixa">Baixa</option>
+          </select>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="primary" type="submit">+ Adicionar alerta</button>
+        <button type="button" id="btnClearAlertForm">Limpar</button>
+      </div>
+    </form>
+    <div class="actions" style="margin-top:8px">
       <button id="btnMarkAllRead">Marcar todos como lidos</button>
       <button class="danger" id="btnClearAlerts">Limpar historico</button>
     </div>
@@ -1836,6 +1874,37 @@ function bindEvents() {
       btnClearAlerts.onclick = () => {
         state.alerts = [];
         saveAlerts();
+        render();
+      };
+    }
+
+    const addAlertForm = document.getElementById("addAlertForm");
+    if (addAlertForm) {
+      attachStockAutocomplete(addAlertForm);
+
+      const btnClearAlertForm = document.getElementById("btnClearAlertForm");
+      if (btnClearAlertForm) {
+        btnClearAlertForm.onclick = () => {
+          addAlertForm.reset();
+        };
+      }
+
+      addAlertForm.onsubmit = (e) => {
+        e.preventDefault();
+        const data = new FormData(addAlertForm);
+        const ticker = (data.get("ticker") || "").toUpperCase().trim();
+        const type = data.get("type") || "alerta manual";
+        const message = (data.get("message") || "").trim();
+        const priority = data.get("priority") || "media";
+        if (!ticker) return;
+        addAlert({
+          ticker,
+          type,
+          message: message || `${ticker}: ${type}`,
+          priority
+        });
+        saveAlerts();
+        addAlertForm.reset();
         render();
       };
     }
