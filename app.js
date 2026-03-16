@@ -96,7 +96,38 @@ const B3_FALLBACK = [
   { ticker: "MULT3", name: "Multiplan" },
   { ticker: "IGTI11", name: "Iguatemi" },
   { ticker: "TEND3", name: "Construtora Tenda" },
-  { ticker: "DIRR3", name: "Direcional Engenharia" }
+  { ticker: "DIRR3", name: "Direcional Engenharia" },
+  { ticker: "MYPK3", name: "Iochpe-Maxion" },
+  { ticker: "ALPA4", name: "Alpargatas" },
+  { ticker: "ALPA3", name: "Alpargatas ON" },
+  { ticker: "GOLL4", name: "Gol Linhas Aereas" },
+  { ticker: "AZUL4", name: "Azul Linhas Aereas" },
+  { ticker: "ARZZ3", name: "Arezzo" },
+  { ticker: "SOMA3", name: "Grupo Soma" },
+  { ticker: "VIVA3", name: "Vivara" },
+  { ticker: "TUPY3", name: "Tupy" },
+  { ticker: "FRAS3", name: "Frasle Mobility" },
+  { ticker: "RAIZ4", name: "Raizen" },
+  { ticker: "SIMH3", name: "Simpar" },
+  { ticker: "VAMO3", name: "Vamos" },
+  { ticker: "PETZ3", name: "Petz" },
+  { ticker: "ASAI3", name: "Assai Atacadista" },
+  { ticker: "CRFB3", name: "Carrefour Brasil" },
+  { ticker: "IRBR3", name: "IRB Brasil Resseguros" },
+  { ticker: "QUAL3", name: "Qualicorp" },
+  { ticker: "ODPV3", name: "Odontoprev" },
+  { ticker: "DASA3", name: "Diagnosticos da America" },
+  { ticker: "GRND3", name: "Grendene" },
+  { ticker: "AURE3", name: "Auren Energia" },
+  { ticker: "CPFE3", name: "CPFL Energia" },
+  { ticker: "ENEV3", name: "Eneva" },
+  { ticker: "ENBR3", name: "EDP Brasil" },
+  { ticker: "BRAP4", name: "Bradespar" },
+  { ticker: "JHSF3", name: "JHSF Participacoes" },
+  { ticker: "EVEN3", name: "Even Construtora" },
+  { ticker: "HBOR3", name: "Helbor" },
+  { ticker: "TRIS3", name: "Trisul" },
+  { ticker: "PLPL3", name: "Plano e Plano" }
 ];
 
 function getDefaultApiBaseUrl() {
@@ -568,28 +599,50 @@ function attachStockAutocomplete(form, { nameFieldName = "name", tickerFieldName
     wrap = div;
   }
 
-  // Remove previous dropdown if re-attaching
+  // Also wrap ticker input for its own dropdown
+  let tickerWrap = tickerInput.parentElement;
+  if (!tickerWrap.classList.contains("autocomplete-wrap")) {
+    const divT = document.createElement("div");
+    divT.className = "autocomplete-wrap";
+    tickerInput.parentNode.insertBefore(divT, tickerInput);
+    divT.appendChild(tickerInput);
+    tickerWrap = divT;
+  }
+
+  // Remove previous dropdowns if re-attaching
   const prev = wrap.querySelector(".autocomplete-dropdown");
   if (prev) prev.remove();
+  const prevT = tickerWrap.querySelector(".autocomplete-dropdown");
+  if (prevT) prevT.remove();
 
   const dropdown = document.createElement("ul");
   dropdown.className = "autocomplete-dropdown";
   wrap.appendChild(dropdown);
 
+  const dropdownTicker = document.createElement("ul");
+  dropdownTicker.className = "autocomplete-dropdown";
+  tickerWrap.appendChild(dropdownTicker);
+
   let suggestions = [];
   let activeIndex = -1;
 
+  let activeDropdown = dropdown;
+
   const closeDrop = () => {
     dropdown.style.display = "none";
+    dropdownTicker.style.display = "none";
     activeIndex = -1;
   };
 
-  const renderList = (items) => {
+  const renderList = (items, targetDrop) => {
+    const d = targetDrop || activeDropdown;
+    if (d === dropdown) dropdownTicker.style.display = "none";
+    else dropdown.style.display = "none";
     if (!items.length) {
-      closeDrop();
+      d.style.display = "none";
       return;
     }
-    dropdown.innerHTML = items
+    d.innerHTML = items
       .map(
         (item, i) =>
           `<li class="autocomplete-item" data-index="${i}">
@@ -598,7 +651,7 @@ function attachStockAutocomplete(form, { nameFieldName = "name", tickerFieldName
           </li>`
       )
       .join("");
-    dropdown.style.display = "block";
+    d.style.display = "block";
   };
 
   const selectItem = (item) => {
@@ -618,7 +671,7 @@ function attachStockAutocomplete(form, { nameFieldName = "name", tickerFieldName
     ).slice(0, 10);
   };
 
-  const searchAndRender = debounce(async (value) => {
+  const searchAndRender = debounce(async (value, targetDrop) => {
     const term = value.trim();
     if (term.length < 2) {
       closeDrop();
@@ -629,26 +682,32 @@ function attachStockAutocomplete(form, { nameFieldName = "name", tickerFieldName
     const fallback = filterFallback(term);
     if (fallback.length) {
       suggestions = fallback;
-      renderList(fallback);
+      renderList(fallback, targetDrop);
     }
 
     // Then try backend and replace if got results
     const fresh = await searchMarket(term);
     if (fresh.length) {
       suggestions = fresh;
-      renderList(fresh);
+      renderList(fresh, targetDrop);
     }
   }, 260);
 
   nameInput.addEventListener("input", () => {
     activeIndex = -1;
-    searchAndRender(nameInput.value);
+    activeDropdown = dropdown;
+    searchAndRender(nameInput.value, dropdown);
   });
 
-  nameInput.addEventListener("keydown", (e) => {
-    const items = dropdown.querySelectorAll(".autocomplete-item");
-    if (!items.length) return;
+  tickerInput.addEventListener("input", () => {
+    activeIndex = -1;
+    activeDropdown = dropdownTicker;
+    searchAndRender(tickerInput.value, dropdownTicker);
+  });
 
+  const handleKeydown = (e, currentDrop) => {
+    const items = currentDrop.querySelectorAll(".autocomplete-item");
+    if (!items.length) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       activeIndex = Math.min(activeIndex + 1, items.length - 1);
@@ -664,21 +723,26 @@ function attachStockAutocomplete(form, { nameFieldName = "name", tickerFieldName
     } else if (e.key === "Escape") {
       closeDrop();
     }
-  });
+  };
 
-  // mousedown prevents blur before click fires
-  dropdown.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    const li = e.target.closest(".autocomplete-item");
-    if (!li) return;
-    const idx = Number(li.dataset.index);
-    const selected = suggestions[idx];
-    if (selected) selectItem(selected);
-  });
+  nameInput.addEventListener("keydown", (e) => handleKeydown(e, dropdown));
+  tickerInput.addEventListener("keydown", (e) => handleKeydown(e, dropdownTicker));
 
-  nameInput.addEventListener("blur", () => {
-    setTimeout(closeDrop, 150);
-  });
+  const attachClick = (d) => {
+    d.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      const li = e.target.closest(".autocomplete-item");
+      if (!li) return;
+      const idx = Number(li.dataset.index);
+      const selected = suggestions[idx];
+      if (selected) selectItem(selected);
+    });
+  };
+  attachClick(dropdown);
+  attachClick(dropdownTicker);
+
+  nameInput.addEventListener("blur", () => { setTimeout(closeDrop, 150); });
+  tickerInput.addEventListener("blur", () => { setTimeout(closeDrop, 150); });
 }
 
 async function fetchStockPrice(ticker) {
