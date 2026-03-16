@@ -1932,8 +1932,18 @@ function bindEvents() {
       button.onclick = () => {
         const ticker = normalizeTicker(button.dataset.ticker);
         if (!ticker) return;
+        const confirmRemove = window.confirm(`Remover ${ticker} dos alertas, da carteira e da watchlist?`);
+        if (!confirmRemove) return;
+
         state.alerts = state.alerts.filter((a) => normalizeTicker(a.ticker) !== ticker);
+        state.portfolio = state.portfolio.filter((a) => normalizeTicker(a.ticker) !== ticker);
+        state.watchlist = state.watchlist.filter((w) => normalizeTicker(w.ticker) !== ticker);
+        delete state.trailingHighs[ticker];
+
         saveAlerts();
+        savePortfolio();
+        saveWatchlist();
+        saveTrailingHighs();
         render();
       };
     });
