@@ -1,0 +1,25 @@
+{
+  "name": "a-oes",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:web\" \"npm:dev:api\"",
+    "dev:web": "vite",
+    "dev:api": "node --watch server/index.js",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "start:api": "node server/index.js"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "~5.9.3",
+    "vite": "^8.0.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "ws": "^8.19.0",
+    "yahoo-finance2": "^3.13.2"
+  }
+}
