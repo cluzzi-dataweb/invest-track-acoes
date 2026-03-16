@@ -1067,6 +1067,23 @@ function ensureTickerAlert(ticker) {
   });
 }
 
+function syncPortfolioAlerts() {
+  const tickers = [...new Set(state.portfolio.map((a) => normalizeTicker(a.ticker)).filter(Boolean))];
+  let dismissedChanged = false;
+
+  for (const ticker of tickers) {
+    if (state.dismissedTickers[ticker]) {
+      delete state.dismissedTickers[ticker];
+      dismissedChanged = true;
+    }
+    ensureTickerAlert(ticker);
+  }
+
+  if (dismissedChanged) {
+    saveDismissedTickers();
+  }
+}
+
 function updateStatusLine() {
   const line = document.getElementById("statusLine");
   if (!line) return;
@@ -1090,6 +1107,7 @@ async function updateAllData() {
   updateStatusLine();
 
   try {
+    syncPortfolioAlerts();
     await fetchTop10Analysts();
 
     const tickers = new Set();
@@ -2153,6 +2171,7 @@ async function boot() {
   loadSettings();
   loadTrailingHighs();
   loadDismissedTickers();
+  syncPortfolioAlerts();
 
   createAppLayout();
   render();
