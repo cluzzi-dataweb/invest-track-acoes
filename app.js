@@ -1439,7 +1439,10 @@ function renderAlertsPanel() {
           <td>${analystCount > 0 ? analystCount + " analistas" : "-"}</td>
           <td>${asset ? fmtCurrency(toNumber(asset.buyMorePrice, NaN)) : "-"}</td>
           <td>${fmtDate(alert.createdAt)}</td>
-          <td>${alert.read ? '<span class="muted-text">Lido</span>' : '<button data-action="mark-alert-read" data-id="' + alert.id + '">Marcar como lido</button>'}</td>
+          <td>
+            ${alert.read ? '<span class="muted-text">Lido</span>' : '<button data-action="mark-alert-read" data-id="' + alert.id + '">Marcar como lido</button>'}
+            <button class="danger" data-action="remove-alert-ticker" data-ticker="${escapeHtml(ticker)}">Remover acao</button>
+          </td>
         </tr>
       `;
     })
@@ -1922,6 +1925,16 @@ function bindEvents() {
           saveAlerts();
           render();
         }
+      };
+    });
+
+    panelAlerts.querySelectorAll("button[data-action='remove-alert-ticker']").forEach((button) => {
+      button.onclick = () => {
+        const ticker = normalizeTicker(button.dataset.ticker);
+        if (!ticker) return;
+        state.alerts = state.alerts.filter((a) => normalizeTicker(a.ticker) !== ticker);
+        saveAlerts();
+        render();
       };
     });
 
