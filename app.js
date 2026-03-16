@@ -81,7 +81,22 @@ const B3_FALLBACK = [
   { ticker: "HGLG11", name: "CSHG Logistica FII" },
   { ticker: "KNRI11", name: "Kinea Renda Imobiliaria FII" },
   { ticker: "XPML11", name: "XP Malls FII" },
-  { ticker: "BCFF11", name: "BTG Pactual Fundo de CRI FII" }
+  { ticker: "BCFF11", name: "BTG Pactual Fundo de CRI FII" },
+  { ticker: "BBSE3", name: "BB Seguridade" },
+  { ticker: "ITSA4", name: "Itausa" },
+  { ticker: "ITSA3", name: "Itausa ON" },
+  { ticker: "SANB11", name: "Santander Brasil" },
+  { ticker: "BPAC11", name: "BTG Pactual" },
+  { ticker: "SMTO3", name: "Sao Martinho" },
+  { ticker: "POMO4", name: "Marcopolo" },
+  { ticker: "CMIN3", name: "CSN Mineracao" },
+  { ticker: "RECV3", name: "PetroReconcavo" },
+  { ticker: "COGN3", name: "Cogna Educacao" },
+  { ticker: "YDUQ3", name: "Yduqs Participacoes" },
+  { ticker: "MULT3", name: "Multiplan" },
+  { ticker: "IGTI11", name: "Iguatemi" },
+  { ticker: "TEND3", name: "Construtora Tenda" },
+  { ticker: "DIRR3", name: "Direcional Engenharia" }
 ];
 
 function getDefaultApiBaseUrl() {
