@@ -4,7 +4,8 @@ const STORAGE_KEYS = {
   watchlist: "b3app_watchlist",
   alerts: "b3app_alerts",
   settings: "b3app_settings",
-  trailingHighs: "b3app_trailing_highs"
+  trailingHighs: "b3app_trailing_highs",
+  dismissedTickers: "b3app_dismissed_tickers"
 };
 
 const SELL_SIGNAL_TYPES = {
@@ -155,6 +156,7 @@ const state = {
     localModeAnalystMessage: "dados de analistas indisponiveis no modo local"
   },
   trailingHighs: {},
+  dismissedTickers: {},
   quoteCache: new Map(),
   historicalCache: new Map(),
   analystCache: new Map(),
@@ -249,6 +251,15 @@ function saveTrailingHighs() {
 function loadTrailingHighs() {
   const parsed = parseJsonSafe(localStorage.getItem(STORAGE_KEYS.trailingHighs) || "{}", {});
   state.trailingHighs = parsed && typeof parsed === "object" ? parsed : {};
+}
+
+function saveDismissedTickers() {
+  localStorage.setItem(STORAGE_KEYS.dismissedTickers, JSON.stringify(state.dismissedTickers));
+}
+
+function loadDismissedTickers() {
+  const parsed = parseJsonSafe(localStorage.getItem(STORAGE_KEYS.dismissedTickers) || "{}", {});
+  state.dismissedTickers = parsed && typeof parsed === "object" ? parsed : {};
 }
 
 function uid() {
@@ -941,11 +952,15 @@ async function fetchTop10Analysts() {
 }
 
 function addAlert({ ticker, type, message, priority = "media" }) {
+  const cleanTicker = normalizeTicker(ticker);
+  if (!cleanTicker) return;
+  if (state.dismissedTickers[cleanTicker]) return;
+
   const now = Date.now();
   const lastSimilar = state.alerts.find(
     (alert) =>
       !alert.read &&
-      alert.ticker === ticker &&
+      normalizeTicker(alert.ticker) === cleanTicker &&
       alert.type === type &&
       now - new Date(alert.createdAt).getTime() < 30 * 60 * 1000
   );
@@ -954,7 +969,7 @@ function addAlert({ ticker, type, message, priority = "media" }) {
 
   state.alerts.unshift({
     id: uid(),
-    ticker,
+    ticker: cleanTicker,
     type,
     message,
     priority,
@@ -1724,6 +1739,9 @@ function bindEvents() {
         });
       }
 
+      delete state.dismissedTickers[ticker];
+      saveDismissedTickers();
+
       savePortfolio();
       portfolioForm.reset();
       render();
@@ -1776,6 +1794,9 @@ function bindEvents() {
         notes: String(fd.get("notes") || "").trim(),
         createdAt: new Date().toISOString()
       });
+
+      delete state.dismissedTickers[ticker];
+      saveDismissedTickers();
 
       saveWatchlist();
       watchlistForm.reset();
@@ -1939,11 +1960,13 @@ function bindEvents() {
         state.portfolio = state.portfolio.filter((a) => normalizeTicker(a.ticker) !== ticker);
         state.watchlist = state.watchlist.filter((w) => normalizeTicker(w.ticker) !== ticker);
         delete state.trailingHighs[ticker];
+        state.dismissedTickers[ticker] = new Date().toISOString();
 
         saveAlerts();
         savePortfolio();
         saveWatchlist();
         saveTrailingHighs();
+        saveDismissedTickers();
         render();
       };
     });
@@ -2035,6 +2058,7 @@ async function boot() {
   loadAlerts();
   loadSettings();
   loadTrailingHighs();
+  loadDismissedTickers();
 
   createAppLayout();
   render();
