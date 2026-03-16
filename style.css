@@ -409,6 +409,22 @@ td.negative {
   color: var(--yellow);
 }
 
+.portfolio-row.tone-buy td:first-child {
+  border-left: 3px solid rgba(56, 211, 159, 0.65);
+}
+
+.portfolio-row.tone-sell td:first-child {
+  border-left: 3px solid rgba(255, 107, 107, 0.65);
+}
+
+.portfolio-row.tone-warn td:first-child {
+  border-left: 3px solid rgba(255, 202, 92, 0.7);
+}
+
+.portfolio-row.tone-hold td:first-child {
+  border-left: 3px solid rgba(46, 168, 255, 0.55);
+}
+
 .muted-text {
   color: var(--muted);
   font-size: 0.84rem;

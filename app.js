@@ -1402,23 +1402,42 @@ function renderPortfolioPanel(rows) {
     .map((row) => {
       const ticker = normalizeTicker(row.asset.ticker);
       const analystRec = row.analyst.available ? row.analyst.recommendation : "";
+      const tone = row.status === "VENDER"
+        ? "sell"
+        : row.status === "COMPRAR MAIS"
+          ? "buy"
+          : (row.status === "ATENCAO" || row.status === "REDUZIR")
+            ? "warn"
+            : "hold";
+
+      const buyMorePrice = toNumber(row.asset.buyMorePrice, NaN);
+      const currentPriceClass = Number.isFinite(row.currentPrice) && Number.isFinite(buyMorePrice) && row.currentPrice <= buyMorePrice
+        ? "positive"
+        : "";
+      const targetMean = toNumber(row.analyst.targetMean, NaN);
+      const targetMeanClass = Number.isFinite(row.currentPrice) && Number.isFinite(targetMean)
+        ? (targetMean > row.currentPrice ? "positive" : "negative")
+        : "";
+      const technicalSellClass = Number.isFinite(row.currentPrice) && Number.isFinite(row.technicalSellPrice)
+        ? (row.currentPrice >= row.technicalSellPrice ? "warn-text" : "")
+        : "";
 
       return `
-        <tr>
+        <tr class="portfolio-row tone-${tone}">
           <td class="mono">${escapeHtml(ticker)}</td>
           <td>${escapeHtml(row.asset.name || row.quote.name || ticker)}</td>
           <td>${fmtNumber(toNumber(row.asset.quantity), 0)}</td>
           <td>${fmtCurrency(toNumber(row.asset.avgPrice))}</td>
-          <td>${fmtCurrency(row.currentPrice)}</td>
+          <td class="${currentPriceClass}">${fmtCurrency(row.currentPrice)}</td>
           <td>${fmtCurrency(row.investedValue)}</td>
           <td>${fmtCurrency(row.currentValue)}</td>
           <td class="${row.pnlPct >= 0 ? "positive" : "negative"}">${fmtPct(row.pnlPct)}</td>
-          <td>${fmtCurrency(toNumber(row.asset.buyMorePrice, NaN))}</td>
-          <td>${fmtCurrency(toNumber(row.analyst.targetMean, NaN))}</td>
+          <td class="${currentPriceClass}">${fmtCurrency(toNumber(row.asset.buyMorePrice, NaN))}</td>
+          <td class="${targetMeanClass}">${fmtCurrency(toNumber(row.analyst.targetMean, NaN))}</td>
           <td>${fmtCurrency(toNumber(row.analyst.targetMax, NaN))}</td>
           <td>${recommendationBadge(analystRec)}</td>
           <td class="${toNumber(row.upsidePct, 0) >= 0 ? "positive" : "negative"}">${fmtPct(row.upsidePct)}</td>
-          <td>${fmtCurrency(row.technicalSellPrice)}</td>
+          <td class="${technicalSellClass}">${fmtCurrency(row.technicalSellPrice)}</td>
           <td>${statusBadge(row.status)}</td>
           <td><button data-action="details-asset" data-id="${row.asset.id}">Detalhes</button></td>
           <td><button data-action="edit-asset" data-id="${row.asset.id}">Editar</button></td>
