@@ -154,6 +154,7 @@ const state = {
     autoRefreshMs: 60000,
     backendTop10Endpoint: "/api/market/top10-analysts",
     backendAnalystEndpoint: "/api/market/analyst",
+    notifySellTarget: true,
     localModeAnalystMessage: "dados de analistas indisponiveis no modo local"
   },
   trailingHighs: {},
@@ -968,8 +969,25 @@ function addAlert({ ticker, type, message, priority = "media" }) {
   if (!cleanTicker) return;
   if (state.dismissedTickers[cleanTicker]) return;
 
-  const alreadyExists = state.alerts.some((alert) => normalizeTicker(alert.ticker) === cleanTicker);
-  if (alreadyExists) return;
+  const existingIndex = state.alerts.findIndex((alert) => normalizeTicker(alert.ticker) === cleanTicker);
+  const nowIso = new Date().toISOString();
+
+  if (existingIndex >= 0) {
+    const prev = state.alerts[existingIndex];
+    const updated = {
+      ...prev,
+      type,
+      message,
+      priority,
+      createdAt: nowIso,
+      read: false
+    };
+    state.alerts.splice(existingIndex, 1);
+    state.alerts.unshift(updated);
+    maybeNotifySellTarget(updated);
+    saveAlerts();
+    return;
+  }
 
   state.alerts.unshift({
     id: uid(),
@@ -977,7 +995,7 @@ function addAlert({ ticker, type, message, priority = "media" }) {
     type,
     message,
     priority,
-    createdAt: new Date().toISOString(),
+    createdAt: nowIso,
     read: false
   });
 
@@ -986,11 +1004,32 @@ function addAlert({ ticker, type, message, priority = "media" }) {
   }
 
   saveAlerts();
+  maybeNotifySellTarget(state.alerts[0]);
+}
+
+function maybeNotifySellTarget(alert) {
+  if (!state.settings.notifySellTarget) return;
+  if (typeof Notification === "undefined") return;
+
+  const type = String(alert?.type || "").toLowerCase();
+  if (type !== SELL_SIGNAL_TYPES.TARGET.toLowerCase()) return;
+  if (Notification.permission !== "granted") return;
+
+  const ticker = normalizeTicker(alert?.ticker);
+  const quote = state.quoteCache.get(ticker)?.data || {};
+  const currentPrice = fmtCurrency(toNumber(quote.price, NaN));
+
+  new Notification(`Alerta de venda: ${ticker}`, {
+    body: `${alert.message} | Preco atual: ${currentPrice}`,
+    tag: `sell-target-${ticker}`
+  });
 }
 
 function ensureTickerAlert(ticker) {
   const cleanTicker = normalizeTicker(ticker);
   if (!cleanTicker) return;
+  const exists = state.alerts.some((alert) => normalizeTicker(alert.ticker) === cleanTicker);
+  if (exists) return;
   addAlert({
     ticker: cleanTicker,
     type: "monitorar",
@@ -1657,6 +1696,12 @@ function renderSettingsPanel() {
           <label>Endpoint analistas por ticker</label>
           <input name="backendAnalystEndpoint" value="${escapeHtml(state.settings.backendAnalystEndpoint)}" />
         </div>
+        <div class="field span-2">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input name="notifySellTarget" type="checkbox" ${state.settings.notifySellTarget ? "checked" : ""} />
+            Notificar quando atingir preco esperado de venda
+          </label>
+        </div>
       </div>
       <div class="actions">
         <button class="primary" type="submit">Salvar configuracoes</button>
@@ -1831,6 +1876,11 @@ function bindEvents() {
       state.settings.autoRefreshMs = Math.max(10000, toNumber(fd.get("autoRefreshMs"), 60000));
       state.settings.backendTop10Endpoint = String(fd.get("backendTop10Endpoint") || "/api/market/top10-analysts").trim();
       state.settings.backendAnalystEndpoint = String(fd.get("backendAnalystEndpoint") || "/api/market/analyst").trim();
+      state.settings.notifySellTarget = fd.get("notifySellTarget") === "on";
+
+      if (state.settings.notifySellTarget && typeof Notification !== "undefined" && Notification.permission === "default") {
+        Notification.requestPermission().catch(() => {});
+      }
 
       saveSettings();
       resetAutoRefresh();
