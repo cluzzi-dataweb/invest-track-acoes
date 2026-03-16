@@ -968,16 +968,8 @@ function addAlert({ ticker, type, message, priority = "media" }) {
   if (!cleanTicker) return;
   if (state.dismissedTickers[cleanTicker]) return;
 
-  const now = Date.now();
-  const lastSimilar = state.alerts.find(
-    (alert) =>
-      !alert.read &&
-      normalizeTicker(alert.ticker) === cleanTicker &&
-      alert.type === type &&
-      now - new Date(alert.createdAt).getTime() < 30 * 60 * 1000
-  );
-
-  if (lastSimilar) return;
+  const alreadyExists = state.alerts.some((alert) => normalizeTicker(alert.ticker) === cleanTicker);
+  if (alreadyExists) return;
 
   state.alerts.unshift({
     id: uid(),
