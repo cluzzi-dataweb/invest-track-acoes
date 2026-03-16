@@ -1069,14 +1069,53 @@ function ensureTickerAlert(ticker) {
 
 function syncPortfolioAlerts() {
   const tickers = [...new Set(state.portfolio.map((a) => normalizeTicker(a.ticker)).filter(Boolean))];
+  const tickerSet = new Set(tickers);
   let dismissedChanged = false;
+  let alertsChanged = false;
+
+  const firstAlertByTicker = new Map();
+  for (const alert of state.alerts) {
+    const ticker = normalizeTicker(alert.ticker);
+    if (!tickerSet.has(ticker)) {
+      alertsChanged = true;
+      continue;
+    }
+    if (!firstAlertByTicker.has(ticker)) {
+      firstAlertByTicker.set(ticker, {
+        ...alert,
+        ticker
+      });
+    } else {
+      // duplicate ticker alert dropped by design
+      alertsChanged = true;
+    }
+  }
+
+  const syncedAlerts = tickers.map((ticker) => {
+    const existing = firstAlertByTicker.get(ticker);
+    if (existing) return existing;
+    alertsChanged = true;
+    return {
+      id: uid(),
+      ticker,
+      type: "monitorar",
+      message: `${ticker}: monitorar`,
+      priority: "media",
+      createdAt: new Date().toISOString(),
+      read: false
+    };
+  });
+
+  if (alertsChanged || syncedAlerts.length !== state.alerts.length) {
+    state.alerts = syncedAlerts;
+    saveAlerts();
+  }
 
   for (const ticker of tickers) {
     if (state.dismissedTickers[ticker]) {
       delete state.dismissedTickers[ticker];
       dismissedChanged = true;
     }
-    ensureTickerAlert(ticker);
   }
 
   if (dismissedChanged) {
