@@ -95,6 +95,10 @@ function clampInterval(interval) {
 function mapRecommendation(value, trend) {
   const key = String(value ?? '').toLowerCase()
 
+  if (key.includes('strong_buy') || key.includes('strong buy') || key.includes('strongbuy')) {
+    return 'strong buy'
+  }
+
   if (key.includes('buy')) {
     return 'buy'
   }
@@ -103,9 +107,15 @@ function mapRecommendation(value, trend) {
     return 'sell'
   }
 
-  const buyVotes = Number(trend?.strongBuy ?? 0) + Number(trend?.buy ?? 0)
+  const strongBuyVotes = Number(trend?.strongBuy ?? 0)
+  const plainBuyVotes = Number(trend?.buy ?? 0)
+  const buyVotes = strongBuyVotes + plainBuyVotes
   const holdVotes = Number(trend?.hold ?? 0)
   const sellVotes = Number(trend?.sell ?? 0) + Number(trend?.strongSell ?? 0)
+
+  if (strongBuyVotes > 0 && strongBuyVotes >= plainBuyVotes && strongBuyVotes > holdVotes && strongBuyVotes > sellVotes) {
+    return 'strong buy'
+  }
 
   if (buyVotes > holdVotes && buyVotes > sellVotes) {
     return 'buy'

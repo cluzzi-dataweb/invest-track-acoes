@@ -367,6 +367,13 @@ td.negative {
   font-weight: 700;
 }
 
+.badge.rec-strong-buy {
+  color: #b9ffd8;
+  background: linear-gradient(160deg, rgba(39, 138, 105, 0.45), rgba(56, 211, 159, 0.24));
+  border-color: rgba(114, 246, 191, 0.72);
+  font-weight: 800;
+}
+
 .badge.rec-hold {
   color: #9fc7ff;
   background: rgba(46, 168, 255, 0.15);

@@ -523,7 +523,11 @@ function recommendationBadge(rec) {
     return '<span class="badge rec-na">-</span>';
   }
 
-  if (r === "strongbuy" || r === "strong buy" || r === "outperform" || r === "overweight" || r === "buy") {
+  if (r === "strongbuy" || r === "strong buy" || r === "strong_buy") {
+    return '<span class="badge rec-strong-buy">&#9650; COMPRA FORTE</span>';
+  }
+
+  if (r === "outperform" || r === "overweight" || r === "buy") {
     return '<span class="badge rec-buy">&#9650; COMPRA</span>';
   }
 
@@ -900,13 +904,20 @@ async function fetchAnalystData(ticker) {
     const result = summary?.quoteSummary?.result?.[0] || {};
     const financialData = result.financialData || {};
     const recommendationTrend = result.recommendationTrend?.trend?.[0] || {};
-    const buy = toNumber(recommendationTrend.strongBuy, 0) + toNumber(recommendationTrend.buy, 0);
+    const strongBuyVotes = toNumber(recommendationTrend.strongBuy, 0);
+    const plainBuyVotes = toNumber(recommendationTrend.buy, 0);
+    const buy = strongBuyVotes + plainBuyVotes;
     const hold = toNumber(recommendationTrend.hold, 0);
     const sell = toNumber(recommendationTrend.sell, 0) + toNumber(recommendationTrend.strongSell, 0);
 
     let recommendation = "hold";
-    if (buy > hold && buy > sell) recommendation = "buy";
-    if (sell > buy && sell > hold) recommendation = "sell";
+    if (strongBuyVotes > 0 && strongBuyVotes >= plainBuyVotes && strongBuyVotes > hold && strongBuyVotes > sell) {
+      recommendation = "strong buy";
+    } else if (buy > hold && buy > sell) {
+      recommendation = "buy";
+    } else if (sell > buy && sell > hold) {
+      recommendation = "sell";
+    }
 
     const data = {
       ticker: cleanTicker,
