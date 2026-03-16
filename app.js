@@ -988,6 +988,17 @@ function addAlert({ ticker, type, message, priority = "media" }) {
   saveAlerts();
 }
 
+function ensureTickerAlert(ticker) {
+  const cleanTicker = normalizeTicker(ticker);
+  if (!cleanTicker) return;
+  addAlert({
+    ticker: cleanTicker,
+    type: "monitorar",
+    message: `${cleanTicker}: monitorar`,
+    priority: "media"
+  });
+}
+
 function updateStatusLine() {
   const line = document.getElementById("statusLine");
   if (!line) return;
@@ -1745,6 +1756,7 @@ function bindEvents() {
 
       delete state.dismissedTickers[ticker];
       saveDismissedTickers();
+      ensureTickerAlert(ticker);
 
       savePortfolio();
       portfolioForm.reset();
@@ -2009,16 +2021,18 @@ function bindEvents() {
         const message = (data.get("message") || "").trim();
         const priority = data.get("priority") || "media";
         if (!ticker) return;
+        const clean = normalizeTicker(ticker);
+        delete state.dismissedTickers[clean];
+        saveDismissedTickers();
         addAlert({
-          ticker,
+          ticker: clean,
           type,
-          message: message || `${ticker}: ${type}`,
+          message: message || `${clean}: ${type}`,
           priority
         });
         addAlertForm.reset();
         render();
         // Fetch market data for this ticker immediately if not cached
-        const clean = normalizeTicker(ticker);
         if (!state.quoteCache.has(clean) || !state.analystCache.has(clean)) {
           await Promise.allSettled([
             fetchStockPrice(clean),
