@@ -174,6 +174,17 @@ body {
   font-size: 0.88rem;
 }
 
+.legend-box {
+  border: 1px solid #2a3b57;
+  background: rgba(18, 31, 49, 0.55);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.legend-box .toolbar-note + .toolbar-note {
+  margin-top: 4px;
+}
+
 .form-grid {
   display: grid;
   gap: 10px;

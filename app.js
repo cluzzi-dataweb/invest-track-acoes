@@ -1769,6 +1769,18 @@ function renderAlertsPanel() {
       A orientacao combina o sinal tecnico do alerta com o consenso dos analistas quando disponivel.
       Dados de analistas requerem backend ativo em <code>${escapeHtml(state.settings.apiBaseUrl)}</code>.
     </p>
+    <div class="legend-box" style="margin-top:10px">
+      <strong style="display:block;margin-bottom:6px">Legenda dos sinais</strong>
+      <div class="toolbar-note">RSI extremo: indicador em faixa de sobrecompra/sobrevenda, sugerindo movimento esticado.</div>
+      <div class="toolbar-note">Perda de tendencia: preco perdeu forca da tendencia principal (ex.: abaixo da media).</div>
+      <div class="toolbar-note">Preco-alvo atingido: preco atual chegou no alvo de venda definido.</div>
+      <div class="toolbar-note">Trailing stop acionado: preco recuou mais que o limite apos renovar maxima.</div>
+      <div class="toolbar-note">Stop loss acionado: preco caiu abaixo do limite de protecao.</div>
+      <div class="toolbar-note">Queda com volume: queda relevante com volume acima da media recente.</div>
+      <div class="toolbar-note">Recompra atingida: preco chegou na faixa para comprar mais definida na carteira.</div>
+      <div class="toolbar-note">Oportunidade analistas: alto upside com cobertura/recomendacao favoravel de analistas.</div>
+      <div class="toolbar-note">Monitorar: alerta de acompanhamento geral do ticker.</div>
+    </div>
   `;
 }
 
