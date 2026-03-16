@@ -934,6 +934,7 @@ async function updateAllData() {
     for (const a of state.portfolio) tickers.add(normalizeTicker(a.ticker));
     for (const w of state.watchlist) tickers.add(normalizeTicker(w.ticker));
     for (const t of state.top10) tickers.add(normalizeTicker(t.ticker));
+    for (const al of state.alerts) tickers.add(normalizeTicker(al.ticker));
 
     const jobs = [...tickers].filter(Boolean).map(async (ticker) => {
       const [quote, historical, analyst] = await Promise.all([
@@ -1385,12 +1386,12 @@ function renderAlertsPanel() {
     <form id="addAlertForm">
       <div class="form-grid">
         <div class="field">
-          <label>Acao</label>
-          <input name="name" required placeholder="Buscar acao..." autocomplete="off" />
+          <label>Buscar por nome</label>
+          <input name="name" placeholder="Ex: Petrobras (opcional)" autocomplete="off" />
         </div>
         <div class="field">
-          <label>Ticker</label>
-          <input name="ticker" required placeholder="PETR4" maxlength="12" style="text-transform:uppercase" autocomplete="off" />
+          <label>Ticker <span style="color:var(--accent)">(obrigatorio)</span></label>
+          <input name="ticker" required placeholder="Ex: PETR4" maxlength="12" style="text-transform:uppercase" autocomplete="off" />
         </div>
         <div class="field">
           <label>Tipo</label>
@@ -1889,7 +1890,7 @@ function bindEvents() {
         };
       }
 
-      addAlertForm.onsubmit = (e) => {
+      addAlertForm.onsubmit = async (e) => {
         e.preventDefault();
         const data = new FormData(addAlertForm);
         const ticker = (data.get("ticker") || "").toUpperCase().trim();
@@ -1903,9 +1904,17 @@ function bindEvents() {
           message: message || `${ticker}: ${type}`,
           priority
         });
-        saveAlerts();
         addAlertForm.reset();
         render();
+        // Fetch market data for this ticker immediately if not cached
+        const clean = normalizeTicker(ticker);
+        if (!state.quoteCache.has(clean) || !state.analystCache.has(clean)) {
+          await Promise.allSettled([
+            fetchStockPrice(clean),
+            fetchAnalystData(clean)
+          ]);
+          render();
+        }
       };
     }
   }
