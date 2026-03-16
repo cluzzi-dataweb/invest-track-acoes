@@ -1,6 +1,7 @@
 const STORAGE_KEYS = {
   portfolio: "b3app_portfolio",
   portfolioBackup: "b3app_portfolio_backup",
+  portfolioLastGood: "b3app_portfolio_last_good",
   watchlist: "b3app_watchlist",
   alerts: "b3app_alerts",
   settings: "b3app_settings",
@@ -199,6 +200,11 @@ function savePortfolio() {
   const serialized = JSON.stringify(state.portfolio);
   localStorage.setItem(STORAGE_KEYS.portfolio, serialized);
   localStorage.setItem(STORAGE_KEYS.portfolioBackup, serialized);
+
+  // Keep a resilient recovery snapshot only when portfolio has data.
+  if (Array.isArray(state.portfolio) && state.portfolio.length > 0) {
+    localStorage.setItem(STORAGE_KEYS.portfolioLastGood, serialized);
+  }
 }
 
 function loadPortfolio() {
@@ -211,7 +217,13 @@ function loadPortfolio() {
   }
 
   const backup = parseJsonSafe(localStorage.getItem(STORAGE_KEYS.portfolioBackup) || "[]", []);
-  state.portfolio = Array.isArray(backup) ? backup : [];
+  if (Array.isArray(backup) && backup.length > 0) {
+    state.portfolio = backup;
+    return;
+  }
+
+  const lastGood = parseJsonSafe(localStorage.getItem(STORAGE_KEYS.portfolioLastGood) || "[]", []);
+  state.portfolio = Array.isArray(lastGood) ? lastGood : [];
 }
 
 function saveWatchlist() {
@@ -1835,6 +1847,9 @@ function bindEvents() {
         if (action === "remove-asset") {
           state.portfolio = state.portfolio.filter((a) => a.id !== id);
           savePortfolio();
+          if (state.portfolio.length === 0) {
+            localStorage.setItem(STORAGE_KEYS.portfolioLastGood, "[]");
+          }
           render();
           return;
         }
