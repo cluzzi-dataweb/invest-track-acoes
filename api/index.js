@@ -1,4 +1,6 @@
 import YahooFinance from 'yahoo-finance2'
+import crypto from 'node:crypto'
+import { createCloudUser, getCloudDataByUserId, getCloudUserByEmail, isCloudDatabaseConfigured, writeCloudDataByUserId } from '../server/cloudDatabase.js'
 
 const yahooFinance = new YahooFinance()
 
@@ -35,6 +37,19 @@ const quoteCache = new Map()
 const historyCache = new Map()
 const analystCache = new Map()
 const top10Cache = new Map()
+const cloudProfileCache = new Map()
+const authUsers = new Map()
+const cloudByUserCache = new Map()
+const AUTH_TOKEN_TTL_SECONDS = Number(process.env.AUTH_TOKEN_TTL_SECONDS ?? 60 * 60 * 24 * 30)
+const AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET ?? 'invest-track-dev-secret'
+
+const EMPTY_APP_DATA = {
+  favorites: [],
+  trades: [],
+  buyIntents: [],
+  buyAlerts: [],
+  sellAlerts: [],
+}
 
 function sendJson(res, status, payload) {
   res.statusCode = status
@@ -44,8 +59,110 @@ function sendJson(res, status, payload) {
 
 function setCorsHeaders(res) {
   res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+}
+
+function normalizeEmail(input) {
+  return String(input ?? '').trim().toLowerCase()
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+}
+
+function hashPassword(password, salt) {
+  return crypto.scryptSync(password, salt, 64).toString('hex')
+}
+
+function createPasswordHash(password) {
+  const salt = crypto.randomBytes(16).toString('hex')
+  const hash = hashPassword(password, salt)
+  return { salt, hash }
+}
+
+function verifyPassword(password, salt, hash) {
+  const computed = hashPassword(password, salt)
+  const left = Buffer.from(computed, 'hex')
+  const right = Buffer.from(String(hash ?? ''), 'hex')
+
+  if (left.length !== right.length) {
+    return false
+  }
+
+  return crypto.timingSafeEqual(left, right)
+}
+
+function toBase64Url(data) {
+  return Buffer.from(data).toString('base64url')
+}
+
+function fromBase64Url(data) {
+  return Buffer.from(data, 'base64url').toString('utf-8')
+}
+
+function sign(payloadEncoded) {
+  return crypto.createHmac('sha256', AUTH_TOKEN_SECRET).update(payloadEncoded).digest('base64url')
+}
+
+function createToken(user) {
+  const exp = Math.floor(Date.now() / 1000) + AUTH_TOKEN_TTL_SECONDS
+  const payloadEncoded = toBase64Url(JSON.stringify({ uid: user.id, email: user.email, exp }))
+  const signature = sign(payloadEncoded)
+  return {
+    token: `${payloadEncoded}.${signature}`,
+    expiresAt: new Date(exp * 1000).toISOString(),
+  }
+}
+
+function verifyToken(tokenInput) {
+  const token = String(tokenInput ?? '').trim()
+
+  if (!token.includes('.')) {
+    return null
+  }
+
+  const [payloadEncoded, signature] = token.split('.')
+
+  if (!payloadEncoded || !signature) {
+    return null
+  }
+
+  const expectedSignature = sign(payloadEncoded)
+
+  if (signature.length !== expectedSignature.length) {
+    return null
+  }
+
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
+    return null
+  }
+
+  try {
+    const payload = JSON.parse(fromBase64Url(payloadEncoded))
+
+    if (!payload?.uid || !payload?.email || !Number.isFinite(payload?.exp)) {
+      return null
+    }
+
+    if (Date.now() >= Number(payload.exp) * 1000) {
+      return null
+    }
+
+    return { userId: String(payload.uid), email: String(payload.email) }
+  } catch {
+    return null
+  }
+}
+
+function getBearerToken(req) {
+  const header = String(req.headers.authorization ?? '')
+
+  if (!header.toLowerCase().startsWith('bearer ')) {
+    return null
+  }
+
+  return header.slice(7).trim()
 }
 
 function getCacheValue(cache, key) {
@@ -68,6 +185,24 @@ function setCacheValue(cache, key, value, ttlMs) {
     value,
     expiresAt: Date.now() + ttlMs,
   })
+}
+
+function normalizeAppData(raw) {
+  return {
+    favorites: Array.isArray(raw?.favorites) ? raw.favorites : [],
+    trades: Array.isArray(raw?.trades) ? raw.trades : [],
+    buyIntents: Array.isArray(raw?.buyIntents) ? raw.buyIntents : [],
+    buyAlerts: Array.isArray(raw?.buyAlerts) ? raw.buyAlerts : [],
+    sellAlerts: Array.isArray(raw?.sellAlerts) ? raw.sellAlerts : [],
+  }
+}
+
+function normalizeProfileId(value) {
+  const input = String(value ?? '').trim()
+  if (!/^[a-zA-Z0-9_-]{8,64}$/.test(input)) {
+    return null
+  }
+  return input
 }
 
 function normalizeTicker(ticker) {
@@ -348,12 +483,218 @@ export default async function handler(req, res) {
   const url = new URL(req.url, 'http://localhost')
   const pathname = url.pathname
 
-  if (req.method !== 'GET') {
+  if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'PUT') {
     sendJson(res, 405, { error: 'Metodo nao suportado nesta API.' })
     return
   }
 
   try {
+    if (pathname === '/api/auth/register' && req.method === 'POST') {
+      const email = normalizeEmail(req.body?.email)
+      const password = String(req.body?.password ?? '')
+
+      if (!isValidEmail(email)) {
+        sendJson(res, 400, { error: 'Informe um e-mail valido.' })
+        return
+      }
+
+      if (password.length < 6) {
+        sendJson(res, 400, { error: 'A senha deve ter pelo menos 6 caracteres.' })
+        return
+      }
+
+      const cloudUser = isCloudDatabaseConfigured() ? await getCloudUserByEmail(email) : null
+
+      if (cloudUser || authUsers.has(email)) {
+        sendJson(res, 400, { error: 'Ja existe uma conta com esse e-mail.' })
+        return
+      }
+
+      const { salt, hash } = createPasswordHash(password)
+      const user = {
+        id: crypto.randomUUID(),
+        email,
+        passwordHash: hash,
+        passwordSalt: salt,
+      }
+
+      if (isCloudDatabaseConfigured()) {
+        await createCloudUser(user)
+      } else {
+        authUsers.set(email, user)
+      }
+      const tokenPayload = createToken(user)
+
+      sendJson(res, 201, {
+        token: tokenPayload.token,
+        user: { id: user.id, email: user.email },
+        expiresAt: tokenPayload.expiresAt,
+      })
+      return
+    }
+
+    if (pathname === '/api/auth/login' && req.method === 'POST') {
+      const email = normalizeEmail(req.body?.email)
+      const password = String(req.body?.password ?? '')
+      const user = isCloudDatabaseConfigured() ? await getCloudUserByEmail(email) : authUsers.get(email)
+
+      if (!user || !verifyPassword(password, user.passwordSalt, user.passwordHash)) {
+        sendJson(res, 401, { error: 'E-mail ou senha invalidos.' })
+        return
+      }
+
+      const tokenPayload = createToken(user)
+
+      sendJson(res, 200, {
+        token: tokenPayload.token,
+        user: { id: user.id, email: user.email },
+        expiresAt: tokenPayload.expiresAt,
+      })
+      return
+    }
+
+    if (pathname === '/api/auth/me' && req.method === 'GET') {
+      const auth = verifyToken(getBearerToken(req))
+
+      if (!auth) {
+        sendJson(res, 401, { error: 'Nao autenticado.' })
+        return
+      }
+
+      sendJson(res, 200, { user: auth })
+      return
+    }
+
+    if (pathname === '/api/cloud/data') {
+      const auth = verifyToken(getBearerToken(req))
+
+      if (!auth) {
+        sendJson(res, 401, { error: 'Nao autenticado.' })
+        return
+      }
+
+      if (req.method === 'GET') {
+        const payload = isCloudDatabaseConfigured()
+          ? await getCloudDataByUserId(auth.userId)
+          : cloudByUserCache.get(auth.userId)
+
+        if (!payload) {
+          sendJson(res, 404, { error: 'Dados de nuvem nao encontrados para este usuario.' })
+          return
+        }
+
+        sendJson(res, 200, payload)
+        return
+      }
+
+      if (req.method === 'PUT') {
+        const normalizedData = normalizeAppData(req.body?.data ?? EMPTY_APP_DATA)
+        const payload = isCloudDatabaseConfigured()
+          ? {
+              userId: auth.userId,
+              ...(await writeCloudDataByUserId(auth.userId, normalizedData)),
+            }
+          : {
+              userId: auth.userId,
+              data: normalizedData,
+              updatedAt: new Date().toISOString(),
+            }
+
+        if (!isCloudDatabaseConfigured()) {
+          cloudByUserCache.set(auth.userId, payload)
+        }
+
+        sendJson(res, 201, payload)
+        return
+      }
+
+      sendJson(res, 405, { error: 'Metodo nao suportado nesta API.' })
+      return
+    }
+
+    if (pathname === '/api/legacy-cloud/data') {
+      const auth = verifyToken(getBearerToken(req))
+
+      if (!auth) {
+        sendJson(res, 401, { error: 'Nao autenticado.' })
+        return
+      }
+
+      if (req.method === 'GET') {
+        const payload = isCloudDatabaseConfigured()
+          ? await getCloudDataByUserId(`legacy:${auth.userId}`)
+          : cloudByUserCache.get(`legacy:${auth.userId}`)
+
+        if (!payload) {
+          sendJson(res, 404, { error: 'Dados legados em nuvem nao encontrados para este usuario.' })
+          return
+        }
+
+        sendJson(res, 200, payload)
+        return
+      }
+
+      if (req.method === 'PUT') {
+        const payload = isCloudDatabaseConfigured()
+          ? {
+              userId: auth.userId,
+              ...(await writeCloudDataByUserId(`legacy:${auth.userId}`, req.body?.data ?? {})),
+            }
+          : {
+              userId: auth.userId,
+              data: req.body?.data ?? {},
+              updatedAt: new Date().toISOString(),
+            }
+
+        if (!isCloudDatabaseConfigured()) {
+          cloudByUserCache.set(`legacy:${auth.userId}`, payload)
+        }
+
+        sendJson(res, 201, payload)
+        return
+      }
+
+      sendJson(res, 405, { error: 'Metodo nao suportado nesta API.' })
+      return
+    }
+
+    if (pathname.startsWith('/api/storage/')) {
+      const profileId = normalizeProfileId(pathname.replace('/api/storage/', ''))
+
+      if (!profileId) {
+        sendJson(res, 400, { error: 'Perfil invalido.' })
+        return
+      }
+
+      if (req.method === 'GET') {
+        const payload = cloudProfileCache.get(profileId)
+
+        if (!payload) {
+          sendJson(res, 404, { error: 'Perfil nao encontrado.' })
+          return
+        }
+
+        sendJson(res, 200, payload)
+        return
+      }
+
+      const data = normalizeAppData(req.body?.data ?? EMPTY_APP_DATA)
+      const payload = {
+        profileId,
+        data,
+        updatedAt: new Date().toISOString(),
+      }
+
+      cloudProfileCache.set(profileId, payload)
+      sendJson(res, 201, payload)
+      return
+    }
+
+    if (req.method !== 'GET') {
+      sendJson(res, 405, { error: 'Metodo nao suportado nesta API.' })
+      return
+    }
+
     if (pathname === '/api/health') {
       sendJson(res, 200, { status: 'ok', provider: 'yahoo', runtime: 'vercel-function' })
       return

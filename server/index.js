@@ -3,7 +3,8 @@ import express from 'express'
 import { createServer } from 'node:http'
 import { WebSocketServer } from 'ws'
 import YahooFinance from 'yahoo-finance2'
-import { readPortfolio, writePortfolio } from './storage.js'
+import { loginUser, registerUser, verifyToken } from './auth.js'
+import { readCloudProfile, readLegacyUserCloudData, readPortfolio, readUserCloudData, writeCloudProfile, writeLegacyUserCloudData, writePortfolio, writeUserCloudData } from './storage.js'
 
 const yahooFinance = new YahooFinance()
 
@@ -499,6 +500,119 @@ function enrichPortfolio(holdings, quotes) {
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', provider: 'yahoo' })
+})
+
+function getBearerToken(req) {
+  const header = String(req.headers.authorization ?? '')
+
+  if (!header.toLowerCase().startsWith('bearer ')) {
+    return null
+  }
+
+  return header.slice(7).trim()
+}
+
+function requireAuth(req, res, next) {
+  const token = getBearerToken(req)
+  const payload = verifyToken(token)
+
+  if (!payload) {
+    return res.status(401).json({ error: 'Nao autenticado.' })
+  }
+
+  req.auth = payload
+  return next()
+}
+
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const result = await registerUser(req.body)
+    return res.status(201).json(result)
+  } catch (error) {
+    return res.status(400).json({ error: error.message })
+  }
+})
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const result = await loginUser(req.body)
+    return res.json(result)
+  } catch (error) {
+    return res.status(401).json({ error: error.message })
+  }
+})
+
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  return res.json({ user: req.auth })
+})
+
+app.get('/api/cloud/data', requireAuth, async (req, res) => {
+  try {
+    const payload = await readUserCloudData(req.auth.userId)
+
+    if (!payload) {
+      return res.status(404).json({ error: 'Dados de nuvem nao encontrados para este usuario.' })
+    }
+
+    return res.json(payload)
+  } catch (error) {
+    return res.status(500).json({ error: error.message })
+  }
+})
+
+app.put('/api/cloud/data', requireAuth, async (req, res) => {
+  try {
+    const saved = await writeUserCloudData(req.auth.userId, req.body?.data)
+    return res.status(201).json(saved)
+  } catch (error) {
+    return res.status(400).json({ error: error.message })
+  }
+})
+
+app.get('/api/legacy-cloud/data', requireAuth, async (req, res) => {
+  try {
+    const payload = await readLegacyUserCloudData(req.auth.userId)
+
+    if (!payload) {
+      return res.status(404).json({ error: 'Dados legados em nuvem nao encontrados para este usuario.' })
+    }
+
+    return res.json(payload)
+  } catch (error) {
+    return res.status(500).json({ error: error.message })
+  }
+})
+
+app.put('/api/legacy-cloud/data', requireAuth, async (req, res) => {
+  try {
+    const saved = await writeLegacyUserCloudData(req.auth.userId, req.body?.data)
+    return res.status(201).json(saved)
+  } catch (error) {
+    return res.status(400).json({ error: error.message })
+  }
+})
+
+app.get('/api/storage/:profileId', async (req, res) => {
+  try {
+    const payload = await readCloudProfile(req.params.profileId)
+
+    if (!payload) {
+      return res.status(404).json({ error: 'Perfil nao encontrado.' })
+    }
+
+    return res.json(payload)
+  } catch (error) {
+    return res.status(500).json({ error: error.message })
+  }
+})
+
+app.put('/api/storage/:profileId', async (req, res) => {
+  try {
+    const saved = await writeCloudProfile(req.params.profileId, req.body?.data)
+    return res.status(201).json(saved)
+  } catch (error) {
+    return res.status(400).json({ error: error.message })
+  }
 })
 
 app.get('/api/market/search', async (req, res) => {

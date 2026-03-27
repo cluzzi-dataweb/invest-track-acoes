@@ -7,17 +7,25 @@ import { createId } from '../utils/id.ts'
 
 export class AppStore {
   private data: AppData
+  private readonly onDataChanged?: (data: AppData) => void
 
-  constructor() {
+  constructor(options?: { onDataChanged?: (data: AppData) => void }) {
     this.data = loadData()
+    this.onDataChanged = options?.onDataChanged
   }
 
   snapshot(): AppData {
     return structuredClone(this.data)
   }
 
+  hydrate(data: AppData): void {
+    this.data = structuredClone(data)
+    saveData(this.data)
+  }
+
   save(): void {
     saveData(this.data)
+    this.onDataChanged?.(this.snapshot())
   }
 
   addFavorite(tickerInput: string, type: AssetType): void {

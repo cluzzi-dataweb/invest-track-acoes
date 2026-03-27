@@ -66,6 +66,18 @@ Aplicativo web completo para controle de investimentos em acoes e fundos imobili
 - troca em tempo real por botao no cabecalho
 - preferencia persistida no navegador
 
+11. Sincronizacao em nuvem por perfil
+11. Sincronizacao em nuvem por conta
+- cadastro e login com e-mail/senha no cabecalho
+- salvamento automatico em nuvem a cada alteracao
+- sincronizacao manual imediata por botao
+- em outro dispositivo, basta entrar com a mesma conta
+
+12. Layout legado dark com nuvem
+- a tela principal `app.js` continua como interface padrao
+- a aba `Configuracoes` agora tem criacao de conta, login, logout e sincronizacao
+- os dados do layout dark sao enviados para `/api/legacy-cloud/data`
+
 ## Arquitetura do projeto
 
 Estrutura modular para facilitar manutencao e expansao:
@@ -130,6 +142,38 @@ Modos:
 - `GET /api/market/history/:ticker?range=6mo&interval=1d`
 - `GET /api/market/analyst/:ticker`
 - `GET /api/market/top10-analysts`
+
+### Endpoints de autenticacao e nuvem
+
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `GET /api/auth/me` (Bearer token)
+- `GET /api/cloud/data` (Bearer token)
+- `PUT /api/cloud/data` (Bearer token)
+- `GET /api/legacy-cloud/data` (Bearer token)
+- `PUT /api/legacy-cloud/data` (Bearer token)
+
+### Banco em nuvem com Supabase
+
+Para persistencia real acessivel de qualquer lugar:
+
+1. Crie um projeto no Supabase.
+2. Rode o SQL de [supabase/schema.sql](supabase/schema.sql).
+3. Preencha no `.env`:
+
+```bash
+SUPABASE_URL=https://SEU-PROJETO.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=SEU_SERVICE_ROLE_KEY
+SUPABASE_USERS_TABLE=invest_track_users
+SUPABASE_CLOUD_TABLE=invest_track_cloud_data
+```
+
+4. Suba o backend/API com essas variaveis.
+5. No app dark, abra `Configuracoes`, crie conta e sincronize.
+
+Observacao:
+- com Supabase configurado, o backend passa a gravar usuarios e dados no banco remoto
+- sem Supabase, o backend local continua usando arquivo/disco como fallback
 
 Observacoes:
 
@@ -211,6 +255,28 @@ No painel da Vercel (Project -> Settings -> Environment Variables), configure:
 - `HISTORY_CACHE_TTL_MS=180000`
 - `ANALYST_CACHE_TTL_MS=300000`
 - `TOP10_CACHE_TTL_MS=240000`
+- `SUPABASE_URL=https://SEU-PROJETO.supabase.co`
+- `SUPABASE_SERVICE_ROLE_KEY=SEU_SERVICE_ROLE_KEY`
+- `SUPABASE_USERS_TABLE=invest_track_users`
+- `SUPABASE_CLOUD_TABLE=invest_track_cloud_data`
+- `AUTH_TOKEN_SECRET=defina-um-segredo-forte-e-unico`
+- `AUTH_TOKEN_TTL_SECONDS=2592000`
+
+### Fluxo recomendado na Vercel
+
+1. Suba este projeto na Vercel.
+2. Configure as variaveis acima.
+3. No Supabase, rode [supabase/schema.sql](supabase/schema.sql).
+4. Abra o site publicado.
+5. Na aba `Configuracoes`, deixe `URL base backend/API` vazia para usar a mesma URL do site.
+6. Crie conta, entre e sincronize.
+
+Exemplo:
+- site publicado: `https://meu-b3-monitor.vercel.app`
+- chamadas do frontend: `https://meu-b3-monitor.vercel.app/api/...`
+
+Checklist rapido completo:
+- [DEPLOY_VERCEL_SUPABASE.md](DEPLOY_VERCEL_SUPABASE.md)
 
 ### Observacoes importantes do ambiente Vercel
 
@@ -218,6 +284,9 @@ No painel da Vercel (Project -> Settings -> Environment Variables), configure:
 - O stream WebSocket (`/ws/quotes`) nao fica ativo na Vercel Function.
 - O app continua funcionando via chamadas HTTP/polling para cotacoes e analises.
 - Cache em memoria existe por instancia de function (nao global/persistente).
+- O endpoint `/api/storage/:profileId` na Function usa memoria da instancia (nao e banco persistente).
+- O endpoint autenticado `/api/cloud/data` na Function tambem depende da memoria da instancia (nao persistente globalmente).
+- Para persistencia duravel de dados e contas de usuario, use o backend Node local/VM (`server/index.js`) com Supabase configurado ou conecte outro banco externo.
 
 ## Persistencia local
 

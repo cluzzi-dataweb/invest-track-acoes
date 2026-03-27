@@ -24,6 +24,10 @@ export interface AppViewModel {
   editingTradeId?: string
   editingTradeSide?: 'buy' | 'sell'
   toast?: { text: string; type: 'success' | 'error' }
+  authEmail?: string
+  authStatus: 'authenticated' | 'anonymous'
+  cloudSyncStatus: 'offline' | 'syncing' | 'synced' | 'error'
+  cloudLastSyncedAt?: string
 }
 
 const tabs: Array<{ id: TabId; label: string }> = [
@@ -370,6 +374,17 @@ export function renderApp(view: AppViewModel): string {
 
   const streamClass = view.streamStatus === 'connected' ? 'status-up' : view.streamStatus === 'error' ? 'status-down' : ''
   const themeText = view.themeMode === 'dark' ? 'Tema escuro' : 'Tema claro'
+  const authText = view.authStatus === 'authenticated'
+    ? `Conta conectada: ${view.authEmail ?? '-'}`
+    : 'Conta desconectada: entre para salvar na nuvem'
+  const cloudText = view.cloudSyncStatus === 'synced'
+    ? `Nuvem sincronizada${view.cloudLastSyncedAt ? ` em ${formatDateTime(view.cloudLastSyncedAt)}` : ''}`
+    : view.cloudSyncStatus === 'syncing'
+      ? 'Nuvem sincronizando'
+      : view.cloudSyncStatus === 'error'
+        ? 'Nuvem com erro de sincronizacao'
+        : 'Nuvem indisponivel'
+  const cloudClass = view.cloudSyncStatus === 'synced' ? 'status-up' : view.cloudSyncStatus === 'error' ? 'status-down' : ''
 
   return `
     <div class="container">
@@ -384,9 +399,14 @@ export function renderApp(view: AppViewModel): string {
         </div>
         <div class="header-actions">
           <button data-action="refresh-quotes">Atualizar cotacoes</button>
+          <button data-action="auth-register" class="secondary">Criar conta</button>
+          <button data-action="auth-login" class="secondary">Entrar</button>
+          <button data-action="auth-logout" class="secondary">Sair</button>
+          <button data-action="sync-cloud" class="secondary">Sincronizar nuvem</button>
           <button data-action="toggle-theme" class="secondary">${themeText}</button>
           <p class="small ${streamClass}">${streamText}</p>
-          <p class="small">Dados salvos localmente no navegador</p>
+          <p class="small">${authText}</p>
+          <p class="small ${cloudClass}">${cloudText}</p>
         </div>
       </header>
 

@@ -1,7 +1,10 @@
 import { buildDashboardStats } from '../modules/alerts.ts'
+import { AuthService, type AuthUser } from '../services/authService.ts'
+import { CloudSyncService } from '../services/cloudSyncService.ts'
 import { LiveQuoteSocket } from '../services/liveQuoteSocket.ts'
 import { MarketSearchService, type MarketSuggestion } from '../services/marketSearchService.ts'
 import { quoteConfig, QuoteService } from '../services/quoteService.ts'
+import type { AppData } from '../types.ts'
 import type { AlertDirection, AssetType, PriceAlert, SellAlertKind, TradeSide } from '../types.ts'
 import { normalizeTicker } from '../utils/format.ts'
 import { AppStore } from './store.ts'
@@ -9,12 +12,22 @@ import { renderApp, type AppViewModel, type TabId } from './templates.ts'
 
 export class InvestmentApp {
   private readonly root: HTMLElement
-  private readonly store = new AppStore()
+  private readonly authService = new AuthService(quoteConfig.apiBaseUrl)
+  private readonly cloudSync = new CloudSyncService({ apiBaseUrl: quoteConfig.apiBaseUrl })
+  private readonly store = new AppStore({
+    onDataChanged: (data) => {
+      this.scheduleCloudSync(data)
+    },
+  })
   private readonly quoteService = new QuoteService(quoteConfig)
   private readonly marketSearch = new MarketSearchService(quoteConfig.apiBaseUrl)
   private readonly liveSocket?: LiveQuoteSocket
   private activeTab: TabId = 'dashboard'
   private streamStatus: 'connecting' | 'connected' | 'disconnected' | 'error' = 'disconnected'
+  private cloudSyncStatus: 'offline' | 'syncing' | 'synced' | 'error' = 'offline'
+  private cloudLastSyncedAt?: string
+  private authUser?: AuthUser
+  private cloudSyncTimer?: number
   private themeMode: 'light' | 'dark' = 'light'
   private tickerSuggestions: MarketSuggestion[] = []
   private suggestionTimer?: number
@@ -54,11 +67,85 @@ export class InvestmentApp {
   }
 
   async init(): Promise<void> {
+    await this.bootstrapAuthAndCloud()
     await this.refreshQuotes()
     this.liveSocket?.connect()
     this.subscribeLiveQuotes()
     this.render()
     this.startAutoRefresh()
+  }
+
+  private async bootstrapAuthAndCloud(): Promise<void> {
+    try {
+      this.authUser = await this.authService.me() ?? undefined
+    } catch {
+      this.authUser = undefined
+    }
+
+    await this.loadCloudForCurrentUser()
+  }
+
+  private async loadCloudForCurrentUser(): Promise<void> {
+    const token = this.authService.getToken()
+
+    if (!token || !this.authUser) {
+      this.cloudSyncStatus = 'offline'
+      this.cloudLastSyncedAt = undefined
+      return
+    }
+
+    try {
+      const payload = await this.cloudSync.load(token)
+
+      if (payload) {
+        this.store.hydrate(payload.data)
+        this.cloudLastSyncedAt = payload.updatedAt ?? undefined
+      } else {
+        this.cloudLastSyncedAt = undefined
+      }
+
+      this.cloudSyncStatus = 'synced'
+    } catch {
+      this.cloudSyncStatus = 'error'
+    }
+  }
+
+  private scheduleCloudSync(data: AppData): void {
+    if (!this.authService.getToken() || !this.authUser) {
+      return
+    }
+
+    if (this.cloudSyncTimer) {
+      window.clearTimeout(this.cloudSyncTimer)
+    }
+
+    this.cloudSyncStatus = 'syncing'
+
+    this.cloudSyncTimer = window.setTimeout(() => {
+      void this.syncCloud(data)
+    }, 900)
+  }
+
+  private async syncCloud(data: AppData = this.store.snapshot()): Promise<void> {
+    const token = this.authService.getToken()
+
+    if (!token || !this.authUser) {
+      this.cloudSyncStatus = 'offline'
+      this.renderPreservingForms()
+      return
+    }
+
+    try {
+      this.cloudSyncStatus = 'syncing'
+      this.renderPreservingForms()
+      const payload = await this.cloudSync.save(token, data)
+      this.cloudSyncStatus = 'synced'
+      this.cloudLastSyncedAt = payload.updatedAt ?? undefined
+      this.renderPreservingForms()
+    } catch {
+      this.cloudSyncStatus = 'error'
+      this.renderPreservingForms()
+    }
   }
 
   private startAutoRefresh(): void {
@@ -138,7 +225,35 @@ export class InvestmentApp {
       editingTradeId: this.editingTradeId,
       editingTradeSide: this.editingTradeSide,
       toast: this.toast,
+      authEmail: this.authUser?.email,
+      authStatus: this.authUser ? 'authenticated' : 'anonymous',
+      cloudSyncStatus: this.cloudSyncStatus,
+      cloudLastSyncedAt: this.cloudLastSyncedAt,
     }
+  }
+
+  private async runAuthFlow(mode: 'login' | 'register'): Promise<void> {
+    const email = window.prompt(mode === 'login' ? 'Digite seu e-mail para entrar:' : 'Digite seu e-mail para criar conta:')?.trim()
+
+    if (!email) {
+      return
+    }
+
+    const password = window.prompt(mode === 'login' ? 'Digite sua senha:' : 'Crie uma senha (minimo 6 caracteres):')?.trim()
+
+    if (!password) {
+      return
+    }
+
+    const user = mode === 'login'
+      ? await this.authService.login(email, password)
+      : await this.authService.register(email, password)
+
+    this.authUser = user
+    await this.loadCloudForCurrentUser()
+    await this.refreshQuotes()
+    this.render()
+    this.setToast(mode === 'login' ? 'Login realizado com sucesso.' : 'Conta criada e conectada com sucesso.')
   }
 
   private render(): void {
@@ -285,8 +400,26 @@ export class InvestmentApp {
           await this.refreshQuotes()
           this.setToast('Cotacoes atualizadas com sucesso.')
           return
+        case 'auth-register':
+          await this.runAuthFlow('register')
+          return
+        case 'auth-login':
+          await this.runAuthFlow('login')
+          return
+        case 'auth-logout':
+          this.authService.clearToken()
+          this.authUser = undefined
+          this.cloudSyncStatus = 'offline'
+          this.cloudLastSyncedAt = undefined
+          this.render()
+          this.setToast('Sessao encerrada. Dados seguem salvos localmente neste navegador.')
+          return
         case 'toggle-theme':
           this.toggleThemeMode()
+          return
+        case 'sync-cloud':
+          await this.syncCloud()
+          this.setToast(this.cloudSyncStatus === 'synced' ? 'Nuvem sincronizada.' : 'Falha na sincronizacao com a nuvem.', this.cloudSyncStatus === 'synced' ? 'success' : 'error')
           return
         case 'remove-favorite': {
           const ticker = button.dataset.ticker

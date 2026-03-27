@@ -5,6 +5,7 @@ const STORAGE_KEYS = {
   watchlist: "b3app_watchlist",
   alerts: "b3app_alerts",
   settings: "b3app_settings",
+  authToken: "b3app_auth_token",
   trailingHighs: "b3app_trailing_highs",
   dismissedTickers: "b3app_dismissed_tickers",
   notifyPromptShown: "b3app_notify_prompt_shown"
@@ -155,6 +156,7 @@ const state = {
     autoRefreshMs: 60000,
     backendTop10Endpoint: "/api/market/top10-analysts",
     backendAnalystEndpoint: "/api/market/analyst",
+    cloudAutoSync: true,
     notifySellTarget: true,
     opportunityMinUpsidePct: 25,
     opportunityMinAnalysts: 5,
@@ -172,7 +174,15 @@ const state = {
   activeTab: "portfolio",
   refreshTimer: null,
   isUpdating: false,
-  lastUpdatedAt: null
+  lastUpdatedAt: null,
+  isApplyingCloudSnapshot: false,
+  session: {
+    token: null,
+    user: null,
+    cloudStatus: "local",
+    lastCloudSyncAt: null,
+    cloudSyncTimer: null
+  }
 };
 
 const dom = {
@@ -210,6 +220,8 @@ function savePortfolio() {
   if (Array.isArray(state.portfolio) && state.portfolio.length > 0) {
     localStorage.setItem(STORAGE_KEYS.portfolioLastGood, serialized);
   }
+
+  scheduleLegacyCloudSync();
 }
 
 function loadPortfolio() {
@@ -233,6 +245,7 @@ function loadPortfolio() {
 
 function saveWatchlist() {
   localStorage.setItem(STORAGE_KEYS.watchlist, JSON.stringify(state.watchlist));
+  scheduleLegacyCloudSync();
 }
 
 function loadWatchlist() {
@@ -242,6 +255,7 @@ function loadWatchlist() {
 
 function saveAlerts() {
   localStorage.setItem(STORAGE_KEYS.alerts, JSON.stringify(state.alerts));
+  scheduleLegacyCloudSync();
 }
 
 function loadAlerts() {
@@ -251,6 +265,7 @@ function loadAlerts() {
 
 function saveSettings() {
   localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(state.settings));
+  scheduleLegacyCloudSync();
 }
 
 function loadSettings() {
@@ -261,8 +276,231 @@ function loadSettings() {
   };
 }
 
+function saveAuthToken(token) {
+  if (token) {
+    localStorage.setItem(STORAGE_KEYS.authToken, token);
+    state.session.token = token;
+    return;
+  }
+
+  localStorage.removeItem(STORAGE_KEYS.authToken);
+  state.session.token = null;
+}
+
+function loadAuthToken() {
+  state.session.token = localStorage.getItem(STORAGE_KEYS.authToken) || null;
+}
+
+function clearAuthSession() {
+  saveAuthToken("");
+  state.session.user = null;
+  state.session.cloudStatus = "local";
+  state.session.lastCloudSyncAt = null;
+}
+
+function getApiBase() {
+  return state.settings.apiBaseUrl.replace(/\/$/, "");
+}
+
+function getCloudStatusText() {
+  const accountText = state.session.user
+    ? `conta ${state.session.user.email}`
+    : "sem conta conectada";
+  const syncText = state.session.lastCloudSyncAt
+    ? `${state.session.cloudStatus} em ${fmtDate(state.session.lastCloudSyncAt)}`
+    : state.session.cloudStatus;
+
+  return `${accountText} | nuvem ${syncText}`;
+}
+
+function buildLegacyCloudPayload() {
+  return {
+    portfolio: state.portfolio,
+    watchlist: state.watchlist,
+    alerts: state.alerts,
+    trailingHighs: state.trailingHighs,
+    dismissedTickers: state.dismissedTickers,
+    settings: {
+      autoRefreshMs: state.settings.autoRefreshMs,
+      backendTop10Endpoint: state.settings.backendTop10Endpoint,
+      backendAnalystEndpoint: state.settings.backendAnalystEndpoint,
+      cloudAutoSync: !!state.settings.cloudAutoSync,
+      notifySellTarget: !!state.settings.notifySellTarget,
+      opportunityMinUpsidePct: state.settings.opportunityMinUpsidePct,
+      opportunityMinAnalysts: state.settings.opportunityMinAnalysts,
+      opportunityRequireBuy: !!state.settings.opportunityRequireBuy,
+    }
+  };
+}
+
+function applyLegacyCloudPayload(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const currentApiBaseUrl = state.settings.apiBaseUrl;
+
+  state.isApplyingCloudSnapshot = true;
+  state.portfolio = Array.isArray(data.portfolio) ? data.portfolio : [];
+  state.watchlist = Array.isArray(data.watchlist) ? data.watchlist : [];
+  state.alerts = Array.isArray(data.alerts) ? data.alerts : [];
+  state.trailingHighs = data.trailingHighs && typeof data.trailingHighs === "object" ? data.trailingHighs : {};
+  state.dismissedTickers = data.dismissedTickers && typeof data.dismissedTickers === "object" ? data.dismissedTickers : {};
+  state.settings = {
+    ...state.settings,
+    ...(data.settings && typeof data.settings === "object" ? data.settings : {}),
+    apiBaseUrl: currentApiBaseUrl,
+  };
+  state.isApplyingCloudSnapshot = false;
+
+  savePortfolio();
+  saveWatchlist();
+  saveAlerts();
+  saveTrailingHighs();
+  saveDismissedTickers();
+  saveSettings();
+  syncPortfolioAlerts();
+}
+
+async function authJson(path, options = {}) {
+  const headers = {
+    ...(options.headers || {}),
+  };
+
+  if (state.session.token) {
+    headers.Authorization = `Bearer ${state.session.token}`;
+  }
+
+  return fetchJson(`${getApiBase()}${path}`, {
+    ...options,
+    headers,
+  });
+}
+
+async function registerCloudAccount(email, password) {
+  const payload = await authJson("/api/auth/register", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ email, password })
+  });
+
+  saveAuthToken(payload.token);
+  state.session.user = payload.user;
+  state.session.cloudStatus = "conectada";
+  state.session.lastCloudSyncAt = null;
+  return payload;
+}
+
+async function loginCloudAccount(email, password) {
+  const payload = await authJson("/api/auth/login", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ email, password })
+  });
+
+  saveAuthToken(payload.token);
+  state.session.user = payload.user;
+  state.session.cloudStatus = "conectada";
+  state.session.lastCloudSyncAt = null;
+  return payload;
+}
+
+async function restoreCloudSession() {
+  if (!state.session.token) {
+    state.session.cloudStatus = "local";
+    return false;
+  }
+
+  try {
+    const payload = await authJson("/api/auth/me", { method: "GET" });
+    state.session.user = payload.user;
+    state.session.cloudStatus = "conectada";
+    return true;
+  } catch {
+    clearAuthSession();
+    return false;
+  }
+}
+
+async function loadLegacyCloudData() {
+  if (!state.session.user || !state.session.token) {
+    state.session.cloudStatus = "local";
+    return false;
+  }
+
+  try {
+    const payload = await authJson("/api/legacy-cloud/data", { method: "GET" });
+    applyLegacyCloudPayload(payload.data);
+    state.session.cloudStatus = "sincronizada";
+    state.session.lastCloudSyncAt = payload.updatedAt || new Date().toISOString();
+    return true;
+  } catch (error) {
+    if (String(error?.message || "").includes("404")) {
+      state.session.cloudStatus = "sem backup";
+      return false;
+    }
+
+    state.session.cloudStatus = "erro";
+    return false;
+  }
+}
+
+async function syncLegacyCloudData(showMessage = false) {
+  if (!state.session.user || !state.session.token) {
+    if (showMessage) {
+      window.alert("Entre com sua conta para salvar na nuvem.");
+    }
+    return false;
+  }
+
+  try {
+    state.session.cloudStatus = "sincronizando";
+    updateStatusLine();
+    const payload = await authJson("/api/legacy-cloud/data", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ data: buildLegacyCloudPayload() })
+    });
+    state.session.cloudStatus = "sincronizada";
+    state.session.lastCloudSyncAt = payload.updatedAt || new Date().toISOString();
+    render();
+    updateStatusLine();
+    if (showMessage) {
+      window.alert("Dados salvos na nuvem com sucesso.");
+    }
+    return true;
+  } catch {
+    state.session.cloudStatus = "erro";
+    updateStatusLine();
+    if (showMessage) {
+      window.alert("Falha ao salvar dados na nuvem.");
+    }
+    return false;
+  }
+}
+
+function scheduleLegacyCloudSync() {
+  if (state.isApplyingCloudSnapshot || !state.settings.cloudAutoSync || !state.session.user || !state.session.token) {
+    return;
+  }
+
+  if (state.session.cloudSyncTimer) {
+    clearTimeout(state.session.cloudSyncTimer);
+  }
+
+  state.session.cloudStatus = "pendente";
+  updateStatusLine();
+  state.session.cloudSyncTimer = setTimeout(() => {
+    syncLegacyCloudData(false);
+  }, 1000);
+}
+
 function saveTrailingHighs() {
   localStorage.setItem(STORAGE_KEYS.trailingHighs, JSON.stringify(state.trailingHighs));
+  scheduleLegacyCloudSync();
 }
 
 function loadTrailingHighs() {
@@ -272,6 +510,7 @@ function loadTrailingHighs() {
 
 function saveDismissedTickers() {
   localStorage.setItem(STORAGE_KEYS.dismissedTickers, JSON.stringify(state.dismissedTickers));
+  scheduleLegacyCloudSync();
 }
 
 function loadDismissedTickers() {
@@ -1178,16 +1417,16 @@ function updateStatusLine() {
   if (!line) return;
 
   if (state.isUpdating) {
-    line.textContent = "Atualizando dados de mercado...";
+    line.textContent = `Atualizando dados de mercado... | ${getCloudStatusText()}`;
     return;
   }
 
   if (!state.lastUpdatedAt) {
-    line.textContent = "Aguardando primeira atualizacao";
+    line.textContent = `Aguardando primeira atualizacao | ${getCloudStatusText()}`;
     return;
   }
 
-  line.textContent = `Ultima atualizacao: ${fmtDate(state.lastUpdatedAt)} | refresh ${Math.round(state.settings.autoRefreshMs / 1000)}s`;
+  line.textContent = `Ultima atualizacao: ${fmtDate(state.lastUpdatedAt)} | refresh ${Math.round(state.settings.autoRefreshMs / 1000)}s | ${getCloudStatusText()}`;
 }
 
 async function updateAllData() {
@@ -1874,6 +2113,9 @@ function renderSettingsPanel() {
   const panel = document.getElementById("panel-settings");
   if (!panel) return;
 
+  const cloudStatus = escapeHtml(getCloudStatusText());
+  const accountEmail = escapeHtml(state.session.user?.email || "");
+
   panel.innerHTML = `
     <h2 class="panel-title">Configuracoes</h2>
     <p class="toolbar-note">
@@ -1881,11 +2123,41 @@ function renderSettingsPanel() {
       a aplicacao continua funcionando sem quebrar.
     </p>
 
+    <div class="panel-section">
+      <h3>Conta e nuvem</h3>
+      <p class="toolbar-note">Use a mesma conta em outra maquina para puxar os mesmos dados salvos no banco em nuvem.</p>
+      <p class="toolbar-note">Status atual: ${cloudStatus}</p>
+      <form id="cloudAuthForm">
+        <div class="form-grid">
+          <div class="field span-2">
+            <label>E-mail da conta</label>
+            <input name="cloudEmail" type="email" placeholder="voce@exemplo.com" value="${accountEmail}" />
+          </div>
+          <div class="field span-2">
+            <label>Senha</label>
+            <input name="cloudPassword" type="password" placeholder="Sua senha da conta" />
+          </div>
+          <div class="field span-2">
+            <label style="display:flex;align-items:center;gap:8px">
+              <input name="cloudAutoSync" type="checkbox" ${state.settings.cloudAutoSync ? "checked" : ""} />
+              Sincronizar automaticamente apos alteracoes locais
+            </label>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" type="button" id="btnCloudRegister">Criar conta</button>
+          <button type="button" id="btnCloudLogin">Entrar</button>
+          <button type="button" id="btnCloudLogout">Sair</button>
+          <button type="button" id="btnCloudSyncNow">Sincronizar agora</button>
+        </div>
+      </form>
+    </div>
+
     <form id="settingsForm">
       <div class="form-grid">
         <div class="field span-2">
           <label>URL base backend/API</label>
-          <input name="apiBaseUrl" required value="${escapeHtml(state.settings.apiBaseUrl)}" />
+          <input name="apiBaseUrl" placeholder="Vazio = mesma URL do site publicado" value="${escapeHtml(state.settings.apiBaseUrl)}" />
         </div>
         <div class="field">
           <label>Refresh automatico (ms)</label>
@@ -2093,6 +2365,7 @@ function bindEvents() {
       state.settings.autoRefreshMs = Math.max(10000, toNumber(fd.get("autoRefreshMs"), 60000));
       state.settings.backendTop10Endpoint = String(fd.get("backendTop10Endpoint") || "/api/market/top10-analysts").trim();
       state.settings.backendAnalystEndpoint = String(fd.get("backendAnalystEndpoint") || "/api/market/analyst").trim();
+      state.settings.cloudAutoSync = fd.get("cloudAutoSync") === "on" ? true : state.settings.cloudAutoSync;
       state.settings.notifySellTarget = fd.get("notifySellTarget") === "on";
       state.settings.opportunityMinUpsidePct = Math.max(5, toNumber(fd.get("opportunityMinUpsidePct"), 25));
       state.settings.opportunityMinAnalysts = Math.max(1, toNumber(fd.get("opportunityMinAnalysts"), 5));
@@ -2107,6 +2380,94 @@ function bindEvents() {
       updateStatusLine();
       window.alert("Configuracoes salvas.");
     };
+  }
+
+  const cloudAuthForm = document.getElementById("cloudAuthForm");
+  if (cloudAuthForm) {
+    const cloudAutoSyncInput = cloudAuthForm.querySelector('input[name="cloudAutoSync"]');
+    if (cloudAutoSyncInput) {
+      cloudAutoSyncInput.onchange = () => {
+        state.settings.cloudAutoSync = cloudAutoSyncInput.checked;
+        saveSettings();
+        updateStatusLine();
+      };
+    }
+
+    const getCredentials = () => {
+      const fd = new FormData(cloudAuthForm);
+      const email = String(fd.get("cloudEmail") || "").trim();
+      const password = String(fd.get("cloudPassword") || "").trim();
+      state.settings.cloudAutoSync = fd.get("cloudAutoSync") === "on";
+      saveSettings();
+      return { email, password };
+    };
+
+    const btnCloudRegister = document.getElementById("btnCloudRegister");
+    if (btnCloudRegister) {
+      btnCloudRegister.onclick = async () => {
+        const { email, password } = getCredentials();
+
+        if (!email || !password) {
+          window.alert("Informe e-mail e senha para criar a conta.");
+          return;
+        }
+
+        try {
+          await registerCloudAccount(email, password);
+          await syncLegacyCloudData(false);
+          render();
+          updateStatusLine();
+          window.alert("Conta criada e dados locais enviados para a nuvem.");
+        } catch (error) {
+          window.alert(error.message || "Falha ao criar conta.");
+        }
+      };
+    }
+
+    const btnCloudLogin = document.getElementById("btnCloudLogin");
+    if (btnCloudLogin) {
+      btnCloudLogin.onclick = async () => {
+        const { email, password } = getCredentials();
+
+        if (!email || !password) {
+          window.alert("Informe e-mail e senha para entrar.");
+          return;
+        }
+
+        try {
+          await loginCloudAccount(email, password);
+          const loaded = await loadLegacyCloudData();
+          if (!loaded) {
+            await syncLegacyCloudData(false);
+          }
+          render();
+          updateStatusLine();
+          window.alert(loaded ? "Conta conectada e dados carregados da nuvem." : "Conta conectada. Seu backup em nuvem foi iniciado.");
+        } catch (error) {
+          window.alert(error.message || "Falha ao entrar.");
+        }
+      };
+    }
+
+    const btnCloudLogout = document.getElementById("btnCloudLogout");
+    if (btnCloudLogout) {
+      btnCloudLogout.onclick = () => {
+        clearAuthSession();
+        render();
+        updateStatusLine();
+        window.alert("Sessao encerrada neste navegador.");
+      };
+    }
+
+    const btnCloudSyncNow = document.getElementById("btnCloudSyncNow");
+    if (btnCloudSyncNow) {
+      btnCloudSyncNow.onclick = () => {
+        const { cloudAutoSync } = Object.fromEntries(new FormData(cloudAuthForm).entries());
+        state.settings.cloudAutoSync = cloudAutoSync === "on";
+        saveSettings();
+        syncLegacyCloudData(true);
+      };
+    }
   }
 
   const panelPortfolio = document.getElementById("panel-portfolio");
@@ -2321,6 +2682,7 @@ async function boot() {
   loadWatchlist();
   loadAlerts();
   loadSettings();
+  loadAuthToken();
   loadTrailingHighs();
   loadDismissedTickers();
   syncPortfolioAlerts();
@@ -2328,6 +2690,14 @@ async function boot() {
   createAppLayout();
   render();
   updateStatusLine();
+
+  const restored = await restoreCloudSession();
+  if (restored) {
+    await loadLegacyCloudData();
+    render();
+    updateStatusLine();
+  }
+
   await ensureNotificationPermissionPrompt();
 
   // Deferred render: fires when user leaves a form field after an update was skipped
