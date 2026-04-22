@@ -35,6 +35,9 @@ export class InvestmentApp {
   private editingTradeSide?: 'buy' | 'sell'
   private toast?: { text: string; type: 'success' | 'error' }
   private prefillBuyTicker = ''
+  private prefillSellTicker = ''
+  private prefillSellQuantity = 0
+  private prefillSellPrice = 0
   private prefillIntentTicker = ''
   private prefillIntentPrice = 0
 
@@ -327,6 +330,38 @@ export class InvestmentApp {
       this.prefillBuyTicker = ''
     }
 
+    if (this.prefillSellTicker) {
+      const tickerInput = this.root.querySelector<HTMLInputElement>('#sell-form input[name="ticker"]')
+      if (tickerInput) {
+        tickerInput.value = this.prefillSellTicker
+      }
+
+      if (this.prefillSellQuantity > 0) {
+        const quantityInput = this.root.querySelector<HTMLInputElement>('#sell-form input[name="quantity"]')
+        if (quantityInput) {
+          quantityInput.value = String(this.prefillSellQuantity)
+        }
+      }
+
+      if (this.prefillSellPrice > 0) {
+        const priceInput = this.root.querySelector<HTMLInputElement>('#sell-form input[name="unitPrice"]')
+        if (priceInput) {
+          priceInput.value = String(this.prefillSellPrice)
+          priceInput.focus()
+          priceInput.select()
+        }
+      }
+
+      const dateInput = this.root.querySelector<HTMLInputElement>('#sell-form input[name="date"]')
+      if (dateInput && !dateInput.value) {
+        dateInput.value = new Date().toISOString().slice(0, 10)
+      }
+
+      this.prefillSellTicker = ''
+      this.prefillSellQuantity = 0
+      this.prefillSellPrice = 0
+    }
+
     if (this.prefillIntentTicker) {
       const tickerInput = this.root.querySelector<HTMLInputElement>('#intent-form input[name="ticker"]')
       if (tickerInput) {
@@ -478,6 +513,70 @@ export class InvestmentApp {
             this.prefillBuyTicker = ticker
             this.render()
           }
+          return
+        }
+        case 'portfolio-buy-more': {
+          const ticker = button.dataset.ticker
+          if (ticker) {
+            this.activeTab = 'compras'
+            this.prefillBuyTicker = ticker
+            this.render()
+          }
+          return
+        }
+        case 'portfolio-sell-part': {
+          const ticker = button.dataset.ticker
+          const quantity = Number(button.dataset.quantity ?? 0)
+          const price = Number(button.dataset.price ?? 0)
+
+          if (ticker) {
+            this.activeTab = 'vendas'
+            this.prefillSellTicker = ticker
+            this.prefillSellQuantity = quantity > 0 ? 1 : 0
+            this.prefillSellPrice = price > 0 ? Number(price.toFixed(2)) : 0
+            this.render()
+          }
+          return
+        }
+        case 'portfolio-clear-position': {
+          const ticker = button.dataset.ticker
+          const quantity = Number(button.dataset.quantity ?? 0)
+          const currentPrice = Number(button.dataset.price ?? 0)
+
+          if (!ticker || quantity <= 0) {
+            this.setToast('Posicao invalida para zerar.', 'error')
+            return
+          }
+
+          if (!window.confirm(`Zerar posicao de ${ticker} com venda de ${quantity} cotas?`)) {
+            return
+          }
+
+          const defaultPrice = currentPrice > 0 ? String(Number(currentPrice.toFixed(2))) : ''
+          const unitPriceRaw = window.prompt('Informe o valor unitario da venda para zerar a posicao:', defaultPrice)
+
+          if (unitPriceRaw === null) {
+            return
+          }
+
+          const unitPrice = Number(unitPriceRaw.replace(',', '.'))
+
+          if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+            this.setToast('Valor unitario invalido para zerar posicao.', 'error')
+            return
+          }
+
+          this.store.addTrade({
+            side: 'sell',
+            ticker,
+            type: ticker.endsWith('11') ? 'fii' : 'stock',
+            quantity,
+            unitPrice,
+            date: new Date().toISOString().slice(0, 10),
+            note: 'Zeragem rapida pela carteira',
+          })
+          await this.refreshQuotes()
+          this.setToast(`Posicao de ${ticker} zerada com sucesso.`)
           return
         }
         case 'intent-from-fav': {

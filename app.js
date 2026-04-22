@@ -2,6 +2,7 @@ const STORAGE_KEYS = {
   portfolio: "b3app_portfolio",
   portfolioBackup: "b3app_portfolio_backup",
   portfolioLastGood: "b3app_portfolio_last_good",
+  salesHistory: "b3app_sales_history",
   watchlist: "b3app_watchlist",
   alerts: "b3app_alerts",
   settings: "b3app_settings",
@@ -149,6 +150,7 @@ function isUserTyping() {
 
 const state = {
   portfolio: [],
+  salesHistory: [],
   watchlist: [],
   alerts: [],
   settings: {
@@ -161,6 +163,7 @@ const state = {
     opportunityMinUpsidePct: 25,
     opportunityMinAnalysts: 5,
     opportunityRequireBuy: true,
+    radarMinScore: 60,
     localModeAnalystMessage: "dados de analistas indisponiveis no modo local"
   },
   trailingHighs: {},
@@ -248,6 +251,16 @@ function saveWatchlist() {
   scheduleLegacyCloudSync();
 }
 
+function saveSalesHistory() {
+  localStorage.setItem(STORAGE_KEYS.salesHistory, JSON.stringify(state.salesHistory));
+  scheduleLegacyCloudSync();
+}
+
+function loadSalesHistory() {
+  const parsed = parseJsonSafe(localStorage.getItem(STORAGE_KEYS.salesHistory) || "[]", []);
+  state.salesHistory = Array.isArray(parsed) ? parsed : [];
+}
+
 function loadWatchlist() {
   const parsed = parseJsonSafe(localStorage.getItem(STORAGE_KEYS.watchlist) || "[]", []);
   state.watchlist = Array.isArray(parsed) ? parsed : [];
@@ -316,6 +329,7 @@ function getCloudStatusText() {
 function buildLegacyCloudPayload() {
   return {
     portfolio: state.portfolio,
+    salesHistory: state.salesHistory,
     watchlist: state.watchlist,
     alerts: state.alerts,
     trailingHighs: state.trailingHighs,
@@ -329,6 +343,7 @@ function buildLegacyCloudPayload() {
       opportunityMinUpsidePct: state.settings.opportunityMinUpsidePct,
       opportunityMinAnalysts: state.settings.opportunityMinAnalysts,
       opportunityRequireBuy: !!state.settings.opportunityRequireBuy,
+      radarMinScore: Math.max(0, Math.min(100, toNumber(state.settings.radarMinScore, 60))),
     }
   };
 }
@@ -339,6 +354,7 @@ function applyLegacyCloudPayload(payload) {
 
   state.isApplyingCloudSnapshot = true;
   state.portfolio = Array.isArray(data.portfolio) ? data.portfolio : [];
+  state.salesHistory = Array.isArray(data.salesHistory) ? data.salesHistory : [];
   state.watchlist = Array.isArray(data.watchlist) ? data.watchlist : [];
   state.alerts = Array.isArray(data.alerts) ? data.alerts : [];
   state.trailingHighs = data.trailingHighs && typeof data.trailingHighs === "object" ? data.trailingHighs : {};
@@ -351,6 +367,7 @@ function applyLegacyCloudPayload(payload) {
   state.isApplyingCloudSnapshot = false;
 
   savePortfolio();
+  saveSalesHistory();
   saveWatchlist();
   saveAlerts();
   saveTrailingHighs();
@@ -592,6 +609,7 @@ function createAppLayout() {
 
       <nav class="tabs">
         <button class="tab-btn active" data-tab="portfolio">Minha Carteira</button>
+        <button class="tab-btn" data-tab="sales">Vendas</button>
         <button class="tab-btn" data-tab="top10">Top 10 Analistas</button>
         <button class="tab-btn" data-tab="alerts">Alertas</button>
         <button class="tab-btn" data-tab="watchlist">Watchlist</button>
@@ -599,6 +617,7 @@ function createAppLayout() {
       </nav>
 
       <section class="panel active" id="panel-portfolio"></section>
+      <section class="panel" id="panel-sales"></section>
       <section class="panel" id="panel-top10"></section>
       <section class="panel" id="panel-alerts"></section>
       <section class="panel" id="panel-watchlist"></section>
@@ -706,6 +725,139 @@ function checkSellSignals(asset, context) {
   return [...new Set(signals)];
 }
 
+function normalizeAnalystRecommendation(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  const normalized = raw
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\-_]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized || normalized === "-" || normalized.includes("indispon")) {
+    return null;
+  }
+
+  if (
+    normalized === "strong buy" ||
+    normalized === "strongbuy" ||
+    normalized === "buy" ||
+    normalized === "outperform" ||
+    normalized === "overweight" ||
+    normalized === "compra forte" ||
+    normalized === "compra"
+  ) {
+    return "COMPRAR";
+  }
+
+  if (
+    normalized === "hold" ||
+    normalized === "neutral" ||
+    normalized === "market perform" ||
+    normalized === "marketperform" ||
+    normalized === "equal weight" ||
+    normalized === "equalweight" ||
+    normalized === "manter" ||
+    normalized === "neutro" ||
+    normalized === "neutra"
+  ) {
+    return "MANTER";
+  }
+
+  if (
+    normalized === "reduce" ||
+    normalized === "underweight" ||
+    normalized === "reduzir"
+  ) {
+    return "REDUZIR";
+  }
+
+  if (
+    normalized === "sell" ||
+    normalized === "strong sell" ||
+    normalized === "strongsell" ||
+    normalized === "underperform" ||
+    normalized === "venda" ||
+    normalized === "vender"
+  ) {
+    return "VENDER";
+  }
+
+  return null;
+}
+
+function getFinalSignal(asset) {
+  const recommendation = normalizeAnalystRecommendation(
+    asset?.analystRecommendation ?? asset?.analyst?.recommendation ?? asset?.recommendation
+  );
+  const upsidePct = toNumber(asset?.upsidePct, NaN);
+  const pnlPct = toNumber(asset?.pnlPct, NaN);
+  const technicalSellPrice = toNumber(asset?.technicalSellPrice, NaN);
+  const currentPrice = toNumber(asset?.currentPrice, NaN);
+  const status = String(asset?.status || "").toUpperCase();
+
+  const hasStrongExitStatus = status === "VENDER";
+  const hasAttentionStatus = status === "ATENCAO";
+  const isNearTechnicalSell =
+    Number.isFinite(currentPrice) &&
+    Number.isFinite(technicalSellPrice) &&
+    technicalSellPrice > 0 &&
+    currentPrice >= technicalSellPrice * 0.985;
+
+  const upsideNonPositive = Number.isFinite(upsidePct) && upsidePct <= 0;
+  const upsideVeryLowWithProfit = Number.isFinite(upsidePct) && upsidePct <= 5 && Number.isFinite(pnlPct) && pnlPct >= 12;
+  const lowUpsideWithProfit = Number.isFinite(upsidePct) && upsidePct <= 10 && Number.isFinite(pnlPct) && pnlPct >= 15;
+
+  if (
+    hasStrongExitStatus ||
+    recommendation === "VENDER" ||
+    upsideNonPositive ||
+    upsideVeryLowWithProfit ||
+    (isNearTechnicalSell && Number.isFinite(pnlPct) && pnlPct >= 8) ||
+    (hasAttentionStatus && recommendation === "REDUZIR" && Number.isFinite(upsidePct) && upsidePct <= 8)
+  ) {
+    return "VENDER";
+  }
+
+  if (
+    status === "REDUZIR" ||
+    lowUpsideWithProfit ||
+    (hasAttentionStatus && Number.isFinite(pnlPct) && pnlPct >= 10) ||
+    recommendation === "REDUZIR"
+  ) {
+    return "REDUZIR";
+  }
+
+  const attractiveUpside = Number.isFinite(upsidePct) && upsidePct > 15;
+  const hasStrongAlert = hasAttentionStatus || status === "REDUZIR" || status === "VENDER";
+  if (recommendation === "COMPRAR" && attractiveUpside && !hasStrongAlert && !isNearTechnicalSell) {
+    return "COMPRAR";
+  }
+
+  return "MANTER";
+}
+
+function getFinalSignalReason(asset) {
+  const signal = getFinalSignal(asset);
+
+  if (signal === "COMPRAR") {
+    return "Upside atrativo com consenso positivo";
+  }
+
+  if (signal === "REDUZIR") {
+    return "Lucro relevante com upside remanescente limitado";
+  }
+
+  if (signal === "VENDER") {
+    return "Baixa assimetria e sinal de saida mais forte";
+  }
+
+  return "Sem gatilho claro de compra adicional ou saida";
+}
+
 function classifyAsset(asset, indicators, analystData) {
   const currentPrice = toNumber(indicators.currentPrice);
 
@@ -755,41 +907,603 @@ function statusBadge(status) {
   return '<span class="badge hold">MANTER</span>';
 }
 
-function recommendationBadge(rec) {
-  const r = String(rec || "").toLowerCase().trim();
+function finalSignalBadge(signal, reason = "") {
+  const s = String(signal || "MANTER").toUpperCase();
+  const cls = s === "COMPRAR" ? "buy" : s === "REDUZIR" ? "reduce" : s === "VENDER" ? "sell" : "hold";
+  const title = escapeHtml(reason);
+  return `<span class="badge ${cls}" title="${title}">${s}</span>`;
+}
 
-  if (!r || r.includes("indispon") || r === "-") {
+function recommendationBadge(rec) {
+  const raw = String(rec || "").trim();
+  const normalizedRaw = raw
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\-_]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalizedRaw || normalizedRaw.includes("indispon") || normalizedRaw === "-") {
     return '<span class="badge rec-na">-</span>';
   }
 
-  if (r === "strongbuy" || r === "strong buy" || r === "strong_buy") {
+  if (normalizedRaw === "strong buy" || normalizedRaw === "strongbuy" || normalizedRaw === "compra forte") {
     return '<span class="badge rec-strong-buy">&#9650; COMPRA FORTE</span>';
   }
 
-  if (r === "outperform" || r === "overweight" || r === "buy") {
+  const normalizedClass = normalizeAnalystRecommendation(raw);
+
+  if (normalizedClass === "COMPRAR") {
     return '<span class="badge rec-buy">&#9650; COMPRA</span>';
   }
 
-  if (r === "hold" || r === "neutral" || r === "equal weight" || r === "equalweight" || r === "market perform" || r === "marketperform") {
+  if (normalizedClass === "MANTER") {
     return '<span class="badge rec-hold">&#9654; MANTER</span>';
   }
 
-  if (r === "underperform" || r === "underweight" || r === "reduce") {
+  if (normalizedClass === "REDUZIR") {
     return '<span class="badge rec-reduce">&#9660; REDUZIR</span>';
   }
 
-  if (r === "strongsell" || r === "strong sell" || r === "sell") {
+  if (normalizedClass === "VENDER") {
     return '<span class="badge rec-sell">&#9660; VENDA</span>';
   }
 
   // Unknown value — show as-is with a neutral badge
-  return `<span class="badge rec-hold">${escapeHtml(rec)}</span>`;
+  return `<span class="badge rec-hold">${escapeHtml(raw)}</span>`;
 }
 
 function alertPriorityBadge(priority) {
   if (priority === "alta") return '<span class="badge high">ALTA</span>';
   if (priority === "media") return '<span class="badge mid">MEDIA</span>';
   return '<span class="badge low">BAIXA</span>';
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function promptNumber(message, defaultValue = "") {
+  const raw = window.prompt(message, defaultValue);
+  if (raw === null) return null;
+  const normalized = String(raw).trim().replace(",", ".");
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) {
+    return NaN;
+  }
+  return parsed;
+}
+
+function buildAgentDecision(row) {
+  const reasons = [];
+  let buyScore = 0;
+  let sellScore = 0;
+  const finalSignal = getFinalSignal(row);
+  const finalSignalReason = getFinalSignalReason(row);
+
+  if (row.status === "COMPRAR MAIS") {
+    buyScore += 30;
+    reasons.push("Preco entrou na faixa de recompra definida na sua estrategia.");
+  }
+
+  if (row.status === "VENDER") {
+    sellScore += 34;
+    reasons.push("Sinais tecnicos de protecao indicam realizacao parcial.");
+  } else if (row.status === "REDUZIR") {
+    sellScore += 22;
+    reasons.push("Mercado indica enfraquecimento no curto prazo.");
+  } else if (row.status === "ATENCAO") {
+    sellScore += 14;
+    reasons.push("Momento pede monitoramento mais proximo.");
+  }
+
+  if (Number.isFinite(row.upsidePct)) {
+    if (row.upsidePct >= 20) {
+      buyScore += 18;
+      reasons.push("Upside estimado acima de 20% reforca potencial de compra.");
+    } else if (row.upsidePct <= 5) {
+      sellScore += 12;
+      reasons.push("Upside baixo reduz margem de seguranca para novas compras.");
+    }
+  }
+
+  if (row.pnlPct >= 18) {
+    sellScore += 14;
+    reasons.push("Lucro acumulado relevante pode justificar realizacao parcial.");
+  } else if (row.pnlPct <= -10) {
+    buyScore += 8;
+    reasons.push("Queda relevante; avaliar aporte gradual se fundamentos estiverem intactos.");
+  }
+
+  const rec = String(row.analyst?.recommendation || "").toLowerCase();
+  if (rec.includes("strong buy") || rec.includes("buy") || rec.includes("outperform") || rec.includes("overweight")) {
+    buyScore += 12;
+    reasons.push("Consenso de analistas segue favoravel para compra.");
+  }
+
+  if (rec.includes("sell") || rec.includes("underperform") || rec.includes("underweight") || rec.includes("reduce")) {
+    sellScore += 14;
+    reasons.push("Consenso de analistas aponta viés mais defensivo.");
+  }
+
+  if (finalSignal === "COMPRAR") {
+    buyScore += 16;
+    reasons.unshift(finalSignalReason);
+  } else if (finalSignal === "REDUZIR") {
+    sellScore += 14;
+    reasons.unshift(finalSignalReason);
+  } else if (finalSignal === "VENDER") {
+    sellScore += 22;
+    reasons.unshift(finalSignalReason);
+  } else {
+    reasons.unshift(finalSignalReason);
+  }
+
+  const diff = buyScore - sellScore;
+  const action = finalSignal;
+
+  const confidence = Math.round(clamp(52 + Math.abs(diff) * 1.35, 55, 95));
+  const riskLevel = sellScore >= 35 ? "alto" : sellScore >= 20 ? "medio" : "baixo";
+
+  return {
+    assetId: row.asset.id,
+    ticker: normalizeTicker(row.asset.ticker),
+    action,
+    finalSignal,
+    finalSignalReason,
+    confidence,
+    riskLevel,
+    reasons: reasons.slice(0, 3),
+    buyScore,
+    sellScore
+  };
+}
+
+function buildAgentSnapshot(rows) {
+  const decisions = rows.map((row) => ({ row, decision: buildAgentDecision(row) }));
+
+  const buyCandidates = decisions
+    .filter((item) => item.decision.finalSignal === "COMPRAR")
+    .sort((a, b) => b.decision.confidence - a.decision.confidence);
+
+  const reduceCandidates = decisions
+    .filter((item) => item.decision.finalSignal === "REDUZIR")
+    .sort((a, b) => b.decision.confidence - a.decision.confidence);
+
+  const sellCandidates = decisions
+    .filter((item) => item.decision.finalSignal === "VENDER")
+    .sort((a, b) => b.decision.confidence - a.decision.confidence);
+
+  const bestBuy = buyCandidates[0] || null;
+  const bestReduce = reduceCandidates[0] || null;
+  const bestSell = sellCandidates[0] || null;
+  const riskHighlights = decisions
+    .filter((item) => item.decision.finalSignal === "VENDER" || item.decision.finalSignal === "REDUZIR" || item.decision.sellScore >= 20)
+    .sort((a, b) => b.decision.sellScore - a.decision.sellScore)
+    .slice(0, 3)
+    .map((item) => ({
+      ticker: item.decision.ticker,
+      confidence: item.decision.confidence,
+      reasons: item.decision.reasons.slice(0, 2)
+    }));
+
+  const todayBuy = decisions
+    .filter((item) => item.decision.finalSignal === "COMPRAR")
+    .sort((a, b) => b.decision.confidence - a.decision.confidence)
+    .slice(0, 4)
+    .map((item) => ({
+      ticker: item.decision.ticker,
+      confidence: item.decision.confidence,
+      note: item.decision.finalSignalReason || item.decision.reasons[0] || "Upside atrativo com consenso positivo"
+    }));
+
+  const todaySell = decisions
+    .filter((item) => item.decision.finalSignal === "VENDER")
+    .sort((a, b) => b.decision.confidence - a.decision.confidence)
+    .slice(0, 4)
+    .map((item) => ({
+      ticker: item.decision.ticker,
+      confidence: item.decision.confidence,
+      note: item.decision.finalSignalReason || item.decision.reasons[0] || "Baixa assimetria e sinal de saida mais forte"
+    }));
+
+  const todayReduce = decisions
+    .filter((item) => item.decision.finalSignal === "REDUZIR")
+    .sort((a, b) => b.decision.sellScore - a.decision.sellScore)
+    .slice(0, 4)
+    .map((item) => ({
+      ticker: item.decision.ticker,
+      confidence: item.decision.confidence,
+      note: item.decision.finalSignalReason || item.decision.reasons[0] || "Lucro relevante com upside remanescente limitado"
+    }));
+
+  const todayHold = decisions
+    .filter((item) => item.decision.finalSignal === "MANTER")
+    .sort((a, b) => b.decision.confidence - a.decision.confidence)
+    .slice(0, 4)
+    .map((item) => ({
+      ticker: item.decision.ticker,
+      confidence: item.decision.confidence,
+      note: item.decision.finalSignalReason || item.decision.reasons[0] || "Sem gatilho claro de compra adicional ou saida"
+    }));
+
+  const avgConfidence = decisions.length
+    ? decisions.reduce((acc, item) => acc + item.decision.confidence, 0) / decisions.length
+    : 0;
+  const xp = Math.round(clamp((rows.length * 11) + avgConfidence * 0.55, 0, 100));
+  const level = Math.max(1, Math.floor(xp / 20) + 1);
+
+  let mood = "steady";
+  let headline = "Mercado em equilibrio. Vamos seguir o plano.";
+
+  if (bestSell && bestSell.decision.confidence >= 78) {
+    mood = "alert";
+    headline = "Detectei riscos relevantes. Hora de proteger lucro.";
+  } else if (bestBuy && bestBuy.decision.confidence >= 76) {
+    mood = "excited";
+    headline = "Boas oportunidades no radar. Momento de montar posicao com criterio.";
+  }
+
+  return {
+    decisions,
+    bestBuy,
+    bestReduce,
+    bestSell,
+    riskHighlights,
+    todaySummary: {
+      buy: todayBuy,
+      sell: todaySell,
+      reduce: todayReduce,
+      hold: todayHold
+    },
+    avgConfidence: Math.round(avgConfidence || 0),
+    xp,
+    level,
+    mood,
+    headline
+  };
+}
+
+function buildOpportunityRadar(rows) {
+  const items = [];
+  const inPortfolio = new Set();
+
+  for (const row of rows) {
+    const ticker = normalizeTicker(row.asset.ticker);
+    inPortfolio.add(ticker);
+    const upsidePct = toNumber(row.upsidePct, NaN);
+    const analystsCount = toNumber(row.analyst?.analystsCount, 0);
+    const recommendation = String(row.analyst?.recommendation || "");
+
+    let score = 50;
+    if (Number.isFinite(upsidePct)) {
+      score += clamp((upsidePct - 10) * 0.9, -20, 35);
+    } else {
+      score -= 22;
+    }
+
+    if (isPositiveAnalystRecommendation(recommendation)) {
+      score += 10;
+    } else if (recommendation.toLowerCase().includes("sell") || recommendation.toLowerCase().includes("under")) {
+      score -= 12;
+    }
+
+    if (analystsCount >= 10) {
+      score += 14;
+    } else if (analystsCount >= 5) {
+      score += 9;
+    } else {
+      score -= 6;
+    }
+
+    const finalSignal = getFinalSignal(row);
+    const finalSignalReason = getFinalSignalReason(row);
+
+    if (finalSignal === "COMPRAR") {
+      score += 12;
+    }
+
+    if (finalSignal === "REDUZIR") {
+      score -= 12;
+    }
+
+    if (finalSignal === "VENDER") {
+      score -= 18;
+    }
+
+    score = Math.round(clamp(score, 0, 100));
+
+    items.push({
+      ticker,
+      name: row.asset.name || row.quote?.name || ticker,
+      source: "carteira",
+      currentPrice: toNumber(row.currentPrice, NaN),
+      targetMean: toNumber(row.analyst?.targetMean, NaN),
+      upsidePct,
+      analystsCount,
+      recommendation,
+      status: row.status,
+      finalSignal,
+      finalSignalReason,
+      score,
+      actionLabel: finalSignal === "COMPRAR"
+        ? "Compra guiada"
+        : finalSignal === "REDUZIR"
+          ? "Venda parcial / realizacao"
+          : finalSignal === "VENDER"
+            ? "Venda guiada / zerar"
+            : "Acompanhar sem CTA agressivo"
+    });
+  }
+
+  for (const watch of state.watchlist) {
+    const ticker = normalizeTicker(watch.ticker);
+    if (!ticker || inPortfolio.has(ticker)) {
+      continue;
+    }
+
+    const quote = state.quoteCache.get(ticker)?.data || {};
+    const analyst = state.analystCache.get(ticker)?.data || {};
+    const upsidePct = calculateUpside(toNumber(quote.price, NaN), toNumber(analyst.targetMean, NaN));
+    const analystsCount = toNumber(analyst.analystsCount, 0);
+    const recommendation = String(analyst.recommendation || "");
+    const finalSignal = getFinalSignal({
+      recommendation,
+      upsidePct,
+      currentPrice: toNumber(quote.price, NaN),
+      technicalSellPrice: NaN,
+      status: "WATCHLIST"
+    });
+    const finalSignalReason = getFinalSignalReason({
+      recommendation,
+      upsidePct,
+      currentPrice: toNumber(quote.price, NaN),
+      technicalSellPrice: NaN,
+      status: "WATCHLIST"
+    });
+
+    let score = 46;
+    if (Number.isFinite(upsidePct)) {
+      score += clamp((upsidePct - 12) * 0.95, -18, 38);
+    } else {
+      score -= 16;
+    }
+
+    if (isPositiveAnalystRecommendation(recommendation)) {
+      score += 12;
+    } else if (recommendation.toLowerCase().includes("sell") || recommendation.toLowerCase().includes("under")) {
+      score -= 10;
+    }
+
+    if (analystsCount >= 10) {
+      score += 14;
+    } else if (analystsCount >= 5) {
+      score += 8;
+    } else {
+      score -= 4;
+    }
+
+    score = Math.round(clamp(score, 0, 100));
+
+    items.push({
+      ticker,
+      name: watch.name || quote.name || ticker,
+      source: "watchlist",
+      currentPrice: toNumber(quote.price, NaN),
+      targetMean: toNumber(analyst.targetMean, NaN),
+      upsidePct,
+      analystsCount,
+      recommendation,
+      status: "WATCHLIST",
+      finalSignal,
+      finalSignalReason,
+      score,
+      actionLabel: finalSignal === "COMPRAR"
+        ? "Entrada com gestao"
+        : finalSignal === "MANTER"
+          ? "Monitorar"
+          : finalSignal === "REDUZIR"
+            ? "Entrada parcial"
+            : "Evitar entrada"
+    });
+  }
+
+  return items
+    .filter((item) => Number.isFinite(item.currentPrice))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+}
+
+function renderOpportunityRadar(rows) {
+  const radar = buildOpportunityRadar(rows);
+  const minScore = Math.round(clamp(toNumber(state.settings.radarMinScore, 60), 0, 100));
+  const filtered = radar.filter((item) => item.score >= minScore);
+
+  if (!radar.length) {
+    return `
+      <section class="agent-radar">
+        <h4>Radar de oportunidade</h4>
+        <p class="muted-text">Sem dados suficientes no momento para montar o ranking.</p>
+      </section>
+    `;
+  }
+
+  const controlsHtml = `
+    <div class="agent-radar-controls">
+      <span class="muted-text">Score minimo:</span>
+      ${[0, 50, 60, 70, 80].map((score) => `
+        <button
+          type="button"
+          class="btn ${minScore === score ? 'primary' : ''}"
+          data-action="agent-radar-score"
+          data-score="${score}">
+          ${score === 0 ? 'Todos' : score}
+        </button>
+      `).join("")}
+    </div>
+  `;
+
+  if (!filtered.length) {
+    return `
+      <section class="agent-radar">
+        <h4>Radar de oportunidade</h4>
+        ${controlsHtml}
+        <p class="muted-text">Nenhum ativo atingiu o score minimo ${minScore} agora. Tente reduzir o filtro.</p>
+      </section>
+    `;
+  }
+
+  const rowsHtml = filtered.map((item) => {
+    const scoreClass = item.score >= 75 ? "positive" : item.score >= 55 ? "warn-text" : "negative";
+    const upsideClass = toNumber(item.upsidePct, 0) >= 0 ? "positive" : "negative";
+    return `
+      <tr>
+        <td class="mono">${escapeHtml(item.ticker)}</td>
+        <td>${item.source === "carteira" ? "Carteira" : "Watchlist"}</td>
+        <td>${fmtCurrency(item.currentPrice)}</td>
+        <td>${fmtCurrency(item.targetMean)}</td>
+        <td class="${upsideClass}">${fmtPct(item.upsidePct)}</td>
+        <td>${fmtNumber(item.analystsCount, 0)}</td>
+        <td class="${scoreClass}"><strong>${item.score}</strong></td>
+        <td>${finalSignalBadge(item.finalSignal || "MANTER", item.finalSignalReason || "")}</td>
+        <td>${escapeHtml(item.actionLabel)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  return `
+    <section class="agent-radar">
+      <h4>Radar de oportunidade</h4>
+      ${controlsHtml}
+      <div class="table-wrap agent-radar-table">
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Origem</th>
+              <th>Preco atual</th>
+              <th>Alvo medio</th>
+              <th>Upside %</th>
+              <th>Analistas</th>
+              <th>Score</th>
+              <th>Sinal</th>
+              <th>Acao sugerida</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderDecisionAgent(rows) {
+  if (!rows.length) {
+    return `
+      <section class="agent-card">
+        <div class="agent-avatar mood-steady" aria-hidden="true">
+          <div class="agent-face"><span class="eye"></span><span class="eye"></span><span class="mouth"></span></div>
+        </div>
+        <div>
+          <h3 class="agent-title">Agente Orion</h3>
+          <p class="muted-text">Cadastre ativos para eu comecar as recomendacoes de compra e venda.</p>
+        </div>
+      </section>
+    `;
+  }
+
+  const snapshot = buildAgentSnapshot(rows);
+  const buyMission = snapshot.bestBuy
+    ? `<li><strong>Missao compra:</strong> ${escapeHtml(snapshot.bestBuy.decision.ticker)} (${snapshot.bestBuy.decision.confidence}% confianca)
+         <button class="btn primary" data-action="agent-buy-more" data-id="${snapshot.bestBuy.decision.assetId}">Executar compra guiada</button></li>`
+    : "<li><strong>Missao compra:</strong> nenhuma oportunidade forte no momento.</li>";
+
+  const reduceMission = snapshot.bestReduce
+    ? `<li><strong>Missao reduzir:</strong> ${escapeHtml(snapshot.bestReduce.decision.ticker)} (${snapshot.bestReduce.decision.confidence}% confianca)
+         <button class="btn warn" data-action="agent-sell-part" data-id="${snapshot.bestReduce.decision.assetId}">Executar venda parcial</button></li>`
+    : "<li><strong>Missao reduzir:</strong> sem necessidade clara de realizacao parcial agora.</li>";
+
+  const sellMission = snapshot.bestSell
+    ? `<li><strong>Missao protecao:</strong> ${escapeHtml(snapshot.bestSell.decision.ticker)} (${snapshot.bestSell.decision.confidence}% confianca)
+         <button class="btn warn" data-action="agent-sell-part" data-id="${snapshot.bestSell.decision.assetId}">Executar venda guiada</button>
+         <button class="btn danger" data-action="agent-sell-all" data-id="${snapshot.bestSell.decision.assetId}">Zerar posicao</button></li>`
+    : "<li><strong>Missao protecao:</strong> risco controlado na carteira por enquanto.</li>";
+
+  const risksHtml = snapshot.riskHighlights.length
+    ? `
+      <div class="agent-risks">
+        <p class="muted-text"><strong>Riscos detectados agora:</strong></p>
+        <ul>
+          ${snapshot.riskHighlights.map((item) => `<li><strong>${escapeHtml(item.ticker)}</strong> (${item.confidence}%): ${escapeHtml(item.reasons.join(' '))}</li>`).join("")}
+        </ul>
+      </div>
+    `
+    : "";
+
+  const renderSummaryItems = (items) => {
+    if (!items.length) {
+      return "<li class=\"agent-summary-empty\">Sem destaque agora.</li>";
+    }
+
+    return items
+      .map((item) => `<li><strong>${escapeHtml(item.ticker)}</strong> (${item.confidence}%) - ${escapeHtml(item.note)}</li>`)
+      .join("");
+  };
+
+  const summaryHtml = `
+    <section class="agent-summary">
+      <h4>Resumo automatico de hoje</h4>
+      <div class="agent-summary-grid">
+        <article>
+          <h5>Comprar</h5>
+          <ul>${renderSummaryItems(snapshot.todaySummary.buy)}</ul>
+        </article>
+        <article>
+          <h5>Manter</h5>
+          <ul>${renderSummaryItems(snapshot.todaySummary.hold)}</ul>
+        </article>
+        <article>
+          <h5>Reduzir</h5>
+          <ul>${renderSummaryItems(snapshot.todaySummary.reduce)}</ul>
+        </article>
+        <article>
+          <h5>Vender</h5>
+          <ul>${renderSummaryItems(snapshot.todaySummary.sell)}</ul>
+        </article>
+      </div>
+    </section>
+  `;
+  const radarHtml = renderOpportunityRadar(rows);
+
+  return `
+    <section class="agent-card">
+      <div class="agent-avatar mood-${snapshot.mood}" aria-hidden="true">
+        <div class="agent-face"><span class="eye"></span><span class="eye"></span><span class="mouth"></span></div>
+      </div>
+      <div class="agent-content">
+        <div class="agent-header">
+          <h3 class="agent-title">Agente Orion</h3>
+          <span class="badge hold">Nivel ${snapshot.level} | XP ${snapshot.xp}/100</span>
+        </div>
+        <p class="agent-headline">${snapshot.headline}</p>
+        <div class="agent-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${snapshot.avgConfidence}">
+          <span style="width:${snapshot.avgConfidence}%"></span>
+        </div>
+        <p class="muted-text">Confianca media atual: <strong>${snapshot.avgConfidence}%</strong></p>
+        ${summaryHtml}
+        ${radarHtml}
+        ${risksHtml}
+        <ul class="agent-missions">
+          ${buyMission}
+          ${reduceMission}
+          ${sellMission}
+        </ul>
+      </div>
+    </section>
+  `;
 }
 
 async function fetchJson(url, options = {}) {
@@ -1321,14 +2035,7 @@ function ensureTickerAlert(ticker) {
 }
 
 function isPositiveAnalystRecommendation(rec) {
-  const r = String(rec || "").toLowerCase();
-  return (
-    r === "buy" ||
-    r === "strong buy" ||
-    r === "strongbuy" ||
-    r === "outperform" ||
-    r === "overweight"
-  );
+  return normalizeAnalystRecommendation(rec) === "COMPRAR";
 }
 
 function getAnalystOpportunitySignal(ticker, quote, analyst) {
@@ -1576,6 +2283,26 @@ function getComputedPortfolioRows() {
       technicalSellPrice = Math.max(...options.filter((x) => Number.isFinite(x)));
     }
 
+    const finalSignal = getFinalSignal({
+      status,
+      upsidePct,
+      pnlPct: pnl.pnlPct,
+      technicalSellPrice,
+      currentPrice,
+      analystRecommendation: analyst.recommendation,
+      analyst
+    });
+
+    const finalSignalReason = getFinalSignalReason({
+      status,
+      upsidePct,
+      pnlPct: pnl.pnlPct,
+      technicalSellPrice,
+      currentPrice,
+      analystRecommendation: analyst.recommendation,
+      analyst
+    });
+
     return {
       asset,
       quote,
@@ -1583,10 +2310,13 @@ function getComputedPortfolioRows() {
       currentPrice,
       investedValue: pnl.invested,
       currentValue: pnl.current,
+      pnlValue: pnl.pnl,
       pnlPct: pnl.pnlPct,
       upsidePct,
       technicalSellPrice,
-      status
+      status,
+      finalSignal,
+      finalSignalReason
     };
   });
 }
@@ -1652,11 +2382,11 @@ function renderPortfolioPanel(rows) {
     .map((row) => {
       const ticker = normalizeTicker(row.asset.ticker);
       const analystRec = row.analyst.available ? row.analyst.recommendation : "";
-      const tone = row.status === "VENDER"
+      const tone = row.finalSignal === "VENDER"
         ? "sell"
-        : row.status === "COMPRAR MAIS"
+        : row.finalSignal === "COMPRAR"
           ? "buy"
-          : (row.status === "ATENCAO" || row.status === "REDUZIR")
+          : row.finalSignal === "REDUZIR"
             ? "warn"
             : "hold";
 
@@ -1681,6 +2411,7 @@ function renderPortfolioPanel(rows) {
           <td class="${currentPriceClass}">${fmtCurrency(row.currentPrice)}</td>
           <td>${fmtCurrency(row.investedValue)}</td>
           <td>${fmtCurrency(row.currentValue)}</td>
+          <td class="${row.pnlValue >= 0 ? "positive" : "negative"}">${fmtCurrency(row.pnlValue)}</td>
           <td class="${row.pnlPct >= 0 ? "positive" : "negative"}">${fmtPct(row.pnlPct)}</td>
           <td class="${currentPriceClass}">${fmtCurrency(toNumber(row.asset.buyMorePrice, NaN))}</td>
           <td class="${targetMeanClass}">${fmtCurrency(toNumber(row.analyst.targetMean, NaN))}</td>
@@ -1689,6 +2420,8 @@ function renderPortfolioPanel(rows) {
           <td class="${toNumber(row.upsidePct, 0) >= 0 ? "positive" : "negative"}">${fmtPct(row.upsidePct)}</td>
           <td class="${technicalSellClass}">${fmtCurrency(row.technicalSellPrice)}</td>
           <td>${statusBadge(row.status)}</td>
+          <td>${finalSignalBadge(row.finalSignal, row.finalSignalReason)}</td>
+          <td><button data-action="agent-explain-asset" data-id="${row.asset.id}">Agente</button></td>
           <td><button data-action="details-asset" data-id="${row.asset.id}">Detalhes</button></td>
           <td><button data-action="edit-asset" data-id="${row.asset.id}">Editar</button></td>
           <td><button class="danger" data-action="remove-asset" data-id="${row.asset.id}">Remover</button></td>
@@ -1699,6 +2432,7 @@ function renderPortfolioPanel(rows) {
 
   panel.innerHTML = `
     <h2 class="panel-title">Minha Carteira</h2>
+    ${renderDecisionAgent(rows)}
     <form id="portfolioForm">
       <input type="hidden" name="id" />
       <div class="form-grid">
@@ -1757,6 +2491,7 @@ function renderPortfolioPanel(rows) {
             <th>Preco atual</th>
             <th>Valor investido</th>
             <th>Valor atual</th>
+            <th>Lucro/Prejuizo R$</th>
             <th>Lucro/Prejuizo %</th>
             <th>Preco comprar mais</th>
             <th>Preco-alvo analistas</th>
@@ -1765,16 +2500,136 @@ function renderPortfolioPanel(rows) {
             <th>Upside ate alvo %</th>
             <th>Preco tecnico venda</th>
             <th>Status</th>
+            <th>Sinal final</th>
+            <th>Agente</th>
             <th>Detalhes</th>
             <th>Editar</th>
             <th>Remover</th>
           </tr>
         </thead>
         <tbody>
-          ${rowsHtml || '<tr><td colspan="18" class="empty">Nenhum ativo cadastrado.</td></tr>'}
+          ${rowsHtml || '<tr><td colspan="21" class="empty">Nenhum ativo cadastrado.</td></tr>'}
         </tbody>
       </table>
     </div>
+  `;
+}
+
+function buildTop10AgentInsights() {
+  return state.top10
+    .map((item) => {
+      const ticker = normalizeTicker(item.ticker);
+      const quotePrice = toNumber(state.quoteCache.get(ticker)?.data?.price, NaN);
+      const currentPrice = Number.isFinite(quotePrice) ? quotePrice : toNumber(item.currentPrice, NaN);
+      const cachedAnalyst = state.analystCache.get(ticker)?.data || {};
+      const targetMean = Number.isFinite(toNumber(cachedAnalyst.targetMean, NaN))
+        ? toNumber(cachedAnalyst.targetMean, NaN)
+        : toNumber(item.targetMean, NaN);
+      const recommendation = String(cachedAnalyst.recommendation || item.recommendation || "").toLowerCase();
+      const analystsCount = Math.max(toNumber(cachedAnalyst.analystsCount, 0), toNumber(item.analystsCount, 0));
+      const upsidePct = calculateUpside(currentPrice, targetMean);
+      const reasons = [];
+
+      let score = 48;
+
+      if (Number.isFinite(upsidePct)) {
+        score += clamp((upsidePct - 8) * 1.05, -18, 42);
+      } else {
+        score -= 16;
+        reasons.push("Upside indisponivel no momento.");
+      }
+
+      if (analystsCount >= 15) {
+        score += 14;
+        reasons.push("Cobertura forte de analistas para este ativo.");
+      } else if (analystsCount >= 8) {
+        score += 8;
+        reasons.push("Cobertura razoavel de analistas.");
+      } else {
+        score -= 5;
+        reasons.push("Poucos analistas cobrindo o ativo.");
+      }
+
+      if (recommendation.includes("strong buy")) {
+        score += 18;
+        reasons.push("Consenso de analistas em compra forte.");
+      } else if (isPositiveAnalystRecommendation(recommendation)) {
+        score += 12;
+        reasons.push("Consenso de analistas com viés comprador.");
+      } else if (recommendation.includes("sell") || recommendation.includes("under")) {
+        score -= 14;
+        reasons.push("Consenso atual indica cautela para compra.");
+      } else if (recommendation.includes("hold")) {
+        reasons.push("Analistas sugerem manutencao no curto prazo.");
+      }
+
+      if (Number.isFinite(currentPrice) && Number.isFinite(targetMean) && currentPrice > targetMean) {
+        score -= 12;
+        reasons.push("Preco atual acima do alvo medio reduz atratividade.");
+      }
+
+      score = Math.round(clamp(score, 0, 100));
+
+      let action = "OBSERVAR";
+      if (score >= 75) {
+        action = "COMPRAR";
+      } else if (score >= 60) {
+        action = "MONITORAR COMPRA";
+      } else if (score < 45) {
+        action = "EVITAR ENTRADA";
+      }
+
+      return {
+        ticker,
+        company: item.company,
+        currentPrice,
+        targetMean,
+        upsidePct,
+        analystsCount,
+        recommendation,
+        score,
+        action,
+        reasons: reasons.slice(0, 3)
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
+function renderTop10AgentWidget() {
+  const insights = buildTop10AgentInsights();
+
+  if (!insights.length) {
+    return `
+      <section class="top10-agent">
+        <h3>Agente Orion | Top 10</h3>
+        <p class="muted-text">Sem dados suficientes para gerar recomendacoes no momento.</p>
+      </section>
+    `;
+  }
+
+  const buyCandidates = insights.filter((item) => item.action === "COMPRAR" || item.action === "MONITORAR COMPRA").slice(0, 3);
+  const lead = buyCandidates[0] || insights[0];
+  const leadReason = lead.reasons[0] || "Sinal tecnico e fundamental equilibrado para observacao.";
+
+  const listHtml = buyCandidates.length
+    ? buyCandidates.map((item) => `
+        <li>
+          <strong>${escapeHtml(item.ticker)}</strong> | Score ${item.score} | ${item.action}
+          <div class="muted-text">${escapeHtml(item.reasons[0] || "Motivo nao disponivel")}</div>
+        </li>
+      `).join("")
+    : '<li class="muted-text">Nenhum ticker com compra forte agora; manter monitoramento.</li>';
+
+  return `
+    <section class="top10-agent">
+      <div class="top10-agent-head">
+        <h3>Agente Orion | Top 10</h3>
+        <span class="badge hold">Foco em entrada</span>
+      </div>
+      <p class="top10-agent-headline">Sugestao principal: <strong>${escapeHtml(lead.ticker)}</strong> (${lead.action}) | score ${lead.score}</p>
+      <p class="muted-text">Motivo-chave: ${escapeHtml(leadReason)}</p>
+      <ul class="top10-agent-list">${listHtml}</ul>
+    </section>
   `;
 }
 
@@ -1796,6 +2651,7 @@ function renderTop10Panel() {
           <td class="${toNumber(upside, 0) >= 0 ? "positive" : "negative"}">${fmtPct(upside)}</td>
           <td>${recommendationBadge(item.recommendation)}</td>
           <td>${fmtNumber(item.analystsCount, 0)}</td>
+          <td><button data-action="top10-agent-explain" data-ticker="${item.ticker}">Agente</button></td>
           <td><button data-action="add-top10-watchlist" data-ticker="${item.ticker}">Adicionar</button></td>
           <td><button class="primary" data-action="add-top10-portfolio" data-ticker="${item.ticker}">Adicionar</button></td>
         </tr>
@@ -1805,6 +2661,7 @@ function renderTop10Panel() {
 
   panel.innerHTML = `
     <h2 class="panel-title">Top 10 Analistas</h2>
+    ${renderTop10AgentWidget()}
     <div class="toolbar">
       <div class="toolbar-note">Fonte: consenso de analistas via camada de servico (backend/API).</div>
       <button id="btnRefreshTop10">Recarregar Top 10</button>
@@ -1825,12 +2682,189 @@ function renderTop10Panel() {
             <th>Upside %</th>
             <th>Recomendacao media</th>
             <th>Numero analistas</th>
+            <th>Agente</th>
             <th>Adicionar a watchlist</th>
             <th>Adicionar a carteira</th>
           </tr>
         </thead>
         <tbody>
-          ${rowsHtml || '<tr><td colspan="11" class="empty">Nenhum dado de top 10 no momento.</td></tr>'}
+          ${rowsHtml || '<tr><td colspan="12" class="empty">Nenhum dado de top 10 no momento.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function registerSaleFromPortfolio(assetIdOrTicker, quantityInput, salePriceInput, options = {}) {
+  const quantity = Math.floor(toNumber(quantityInput, 0));
+  const salePrice = toNumber(salePriceInput, NaN);
+  const tickerOrId = String(assetIdOrTicker || "").trim();
+
+  const asset = state.portfolio.find((item) => item.id === tickerOrId)
+    || state.portfolio.find((item) => normalizeTicker(item.ticker) === normalizeTicker(tickerOrId));
+
+  if (!asset) {
+    throw new Error("Ativo nao encontrado na carteira para registrar venda.");
+  }
+
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    throw new Error("Quantidade de venda invalida.");
+  }
+
+  const currentQty = Math.floor(toNumber(asset.quantity, 0));
+  if (quantity > currentQty) {
+    throw new Error("Quantidade de venda maior que a posicao disponivel.");
+  }
+
+  if (!Number.isFinite(salePrice) || salePrice <= 0) {
+    throw new Error("Preco de venda invalido.");
+  }
+
+  const avgCost = toNumber(asset.avgPrice, 0);
+  const proceeds = quantity * salePrice;
+  const costBasis = quantity * avgCost;
+  const pnlValue = proceeds - costBasis;
+  const pnlPct = costBasis > 0 ? (pnlValue / costBasis) * 100 : 0;
+  const date = String(options.date || new Date().toISOString().slice(0, 10));
+
+  state.salesHistory.unshift({
+    id: uid(),
+    ticker: normalizeTicker(asset.ticker),
+    assetName: asset.name || normalizeTicker(asset.ticker),
+    quantity,
+    salePrice,
+    avgCost,
+    proceeds,
+    costBasis,
+    pnlValue,
+    pnlPct,
+    date,
+    note: String(options.note || "").trim(),
+    source: options.source || "manual",
+    createdAt: new Date().toISOString()
+  });
+
+  if (state.salesHistory.length > 500) {
+    state.salesHistory = state.salesHistory.slice(0, 500);
+  }
+
+  const nextQty = currentQty - quantity;
+  if (nextQty <= 0) {
+    state.portfolio = state.portfolio.filter((item) => item.id !== asset.id);
+  } else {
+    asset.quantity = nextQty;
+    asset.updatedAt = new Date().toISOString();
+  }
+
+  syncPortfolioAlerts();
+  savePortfolio();
+  saveSalesHistory();
+}
+
+function renderSalesPanel() {
+  const panel = document.getElementById("panel-sales");
+  if (!panel) return;
+
+  const options = state.portfolio
+    .slice()
+    .sort((a, b) => normalizeTicker(a.ticker).localeCompare(normalizeTicker(b.ticker)))
+    .map((asset) => `<option value="${escapeHtml(asset.id)}">${escapeHtml(normalizeTicker(asset.ticker))} - ${escapeHtml(asset.name || "Sem nome")} (Qtd ${fmtNumber(toNumber(asset.quantity), 0)})</option>`)
+    .join("");
+
+  const totalPnl = state.salesHistory.reduce((acc, item) => acc + toNumber(item.pnlValue, 0), 0);
+  const totalProceeds = state.salesHistory.reduce((acc, item) => acc + toNumber(item.proceeds, 0), 0);
+  const totalCost = state.salesHistory.reduce((acc, item) => acc + toNumber(item.costBasis, 0), 0);
+
+  const rowsHtml = state.salesHistory
+    .map((sale) => `
+      <tr>
+        <td>${fmtDate(sale.date)}</td>
+        <td class="mono">${escapeHtml(sale.ticker)}</td>
+        <td>${fmtNumber(toNumber(sale.quantity), 0)}</td>
+        <td>${fmtCurrency(toNumber(sale.avgCost, NaN))}</td>
+        <td>${fmtCurrency(toNumber(sale.salePrice, NaN))}</td>
+        <td>${fmtCurrency(toNumber(sale.costBasis, NaN))}</td>
+        <td>${fmtCurrency(toNumber(sale.proceeds, NaN))}</td>
+        <td class="${toNumber(sale.pnlValue, 0) >= 0 ? "positive" : "negative"}">${fmtCurrency(toNumber(sale.pnlValue, NaN))}</td>
+        <td class="${toNumber(sale.pnlPct, 0) >= 0 ? "positive" : "negative"}">${fmtPct(toNumber(sale.pnlPct, NaN))}</td>
+        <td>${escapeHtml(sale.note || "-")}</td>
+        <td><button class="danger" data-action="remove-sale-record" data-id="${sale.id}">Remover</button></td>
+      </tr>
+    `)
+    .join("");
+
+  panel.innerHTML = `
+    <h2 class="panel-title">Vendas</h2>
+
+    <section class="cards" style="margin-top:0;margin-bottom:10px">
+      <article class="card">
+        <div class="card-label">Total vendido</div>
+        <div class="card-value">${fmtCurrency(totalProceeds)}</div>
+      </article>
+      <article class="card">
+        <div class="card-label">Custo das vendas</div>
+        <div class="card-value">${fmtCurrency(totalCost)}</div>
+      </article>
+      <article class="card">
+        <div class="card-label">Resultado realizado</div>
+        <div class="card-value ${totalPnl >= 0 ? "positive" : "negative"}">${fmtCurrency(totalPnl)}</div>
+      </article>
+      <article class="card">
+        <div class="card-label">Qtd de vendas</div>
+        <div class="card-value">${fmtNumber(state.salesHistory.length, 0)}</div>
+      </article>
+    </section>
+
+    <form id="salesForm">
+      <div class="form-grid">
+        <div class="field span-2">
+          <label>Ativo em carteira</label>
+          <select name="assetId" required>
+            <option value="">Selecione...</option>
+            ${options}
+          </select>
+        </div>
+        <div class="field">
+          <label>Data da venda</label>
+          <input name="date" type="date" value="${new Date().toISOString().slice(0, 10)}" required />
+        </div>
+        <div class="field">
+          <label>Quantidade vendida</label>
+          <input name="quantity" type="number" min="1" step="1" required />
+        </div>
+        <div class="field">
+          <label>Preco de venda</label>
+          <input name="salePrice" type="number" min="0.01" step="0.01" required />
+        </div>
+        <div class="field span-2">
+          <label>Observacao (opcional)</label>
+          <input name="note" placeholder="Ex: realizacao parcial apos alvo" />
+        </div>
+      </div>
+      <div class="actions">
+        <button class="primary" type="submit">Registrar venda</button>
+      </div>
+    </form>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Data</th>
+            <th>Ticker</th>
+            <th>Qtd</th>
+            <th>Custo medio</th>
+            <th>Preco venda</th>
+            <th>Custo total</th>
+            <th>Valor venda</th>
+            <th>Lucro/Prejuizo R$</th>
+            <th>Lucro/Prejuizo %</th>
+            <th>Obs</th>
+            <th>Acao</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rowsHtml || '<tr><td colspan="11" class="empty">Nenhuma venda registrada.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -1893,10 +2927,57 @@ function alertTone(type) {
   return "hold";
 }
 
+function getSignalMeaning(type) {
+  const t = String(type || "").toLowerCase();
+
+  if (t === SELL_SIGNAL_TYPES.RSI.toLowerCase()) {
+    return "RSI extremo: o ativo pode estar esticado no curto prazo, com chance maior de correcao ou consolidacao.";
+  }
+
+  if (t === SELL_SIGNAL_TYPES.TREND.toLowerCase()) {
+    return "Perda de tendencia: o preco perdeu forca da tendencia principal (ex.: abaixo da media), exigindo mais cautela.";
+  }
+
+  if (t === SELL_SIGNAL_TYPES.TARGET.toLowerCase()) {
+    return "Preco-alvo atingido: o preco chegou no alvo de venda definido para a posicao.";
+  }
+
+  if (t === SELL_SIGNAL_TYPES.TRAILING.toLowerCase()) {
+    return "Trailing stop acionado: apos uma maxima, o preco recuou alem do limite de protecao configurado.";
+  }
+
+  if (t === SELL_SIGNAL_TYPES.STOP_LOSS.toLowerCase()) {
+    return "Stop loss acionado: o preco caiu abaixo do limite de perda definido para proteger o capital.";
+  }
+
+  if (t === SELL_SIGNAL_TYPES.VOLUME_DROP.toLowerCase()) {
+    return "Queda com volume: o ativo caiu com volume acima da media, sugerindo pressao vendedora mais forte.";
+  }
+
+  if (t === SELL_SIGNAL_TYPES.ANALYST_NEAR_TARGET.toLowerCase()) {
+    return "Proximo do alvo dos analistas: preco atual perto do alvo medio, com potencial de alta mais limitado.";
+  }
+
+  if (t === "recompra atingida") {
+    return "Recompra atingida: o preco chegou na faixa que voce definiu para aumentar posicao.";
+  }
+
+  if (t === "oportunidade analistas") {
+    return "Oportunidade analistas: upside atrativo com cobertura de analistas e recomendacao favoravel.";
+  }
+
+  if (t === "monitorar") {
+    return "Monitorar: ticker acompanhado sem gatilho critico no momento.";
+  }
+
+  return "Sinal de monitoramento do agente para apoiar sua decisao.";
+}
+
 function alertTypeBadge(type) {
   const tone = alertTone(type);
   const cls = tone === "sell" ? "sell" : tone === "buy" ? "buy" : tone === "warn" ? "warn" : "hold";
-  return `<span class="badge ${cls}">${escapeHtml(type || "-")}</span>`;
+  const meaning = getSignalMeaning(type);
+  return `<span class="badge ${cls}" title="${escapeHtml(meaning)}">${escapeHtml(type || "-")}</span>`;
 }
 
 function renderAlertsPanel() {
@@ -2208,6 +3289,7 @@ function render() {
   const rows = getComputedPortfolioRows();
   renderSummaryCards(rows);
   renderPortfolioPanel(rows);
+  renderSalesPanel();
   renderTop10Panel();
   renderAlertsPanel();
   renderWatchlistPanel();
@@ -2223,6 +3305,7 @@ function renderActiveTab() {
 
   const map = {
     portfolio: "panel-portfolio",
+    sales: "panel-sales",
     top10: "panel-top10",
     alerts: "panel-alerts",
     watchlist: "panel-watchlist",
@@ -2475,9 +3558,151 @@ function bindEvents() {
     panelPortfolio.querySelectorAll("button[data-action]").forEach((button) => {
       button.onclick = async () => {
         const action = button.dataset.action;
+
+        if (action === "agent-radar-score") {
+          const nextScore = Math.round(clamp(toNumber(button.dataset.score, 60), 0, 100));
+          state.settings.radarMinScore = nextScore;
+          saveSettings();
+          render();
+          return;
+        }
+
         const id = button.dataset.id;
         const asset = state.portfolio.find((a) => a.id === id);
         if (!asset) return;
+
+        if (action === "agent-explain-asset") {
+          const row = getComputedPortfolioRows().find((item) => item.asset.id === id);
+          if (!row) return;
+
+          const decision = buildAgentDecision(row);
+          const reasonsText = decision.reasons.length
+            ? decision.reasons.map((reason, index) => `${index + 1}. ${reason}`).join("\n")
+            : "Sem sinais fortes no momento.";
+
+          window.alert(
+            [
+              `Agente Orion | ${decision.ticker}`,
+              `Sinal final: ${decision.finalSignal}`,
+              `Acao sugerida: ${decision.action}`,
+              `Motivo chave: ${decision.finalSignalReason}`,
+              `Confianca: ${decision.confidence}%`,
+              `Risco atual: ${decision.riskLevel}`,
+              "",
+              "Principais motivos:",
+              reasonsText,
+              "",
+              "Aviso: suporte a decisao. Confirmacao final e sempre sua."
+            ].join("\n")
+          );
+          return;
+        }
+
+        if (action === "agent-buy-more") {
+          const basePrice = state.quoteCache.get(normalizeTicker(asset.ticker))?.data?.price;
+          const qty = promptNumber(`Quantidade a comprar de ${asset.ticker}:`, "1");
+          if (qty === null) return;
+          if (!Number.isFinite(qty) || qty <= 0) {
+            window.alert("Quantidade invalida.");
+            return;
+          }
+
+          const price = promptNumber("Preco unitario da compra:", Number.isFinite(basePrice) ? String(Number(basePrice).toFixed(2)) : String(toNumber(asset.avgPrice, 0)));
+          if (price === null) return;
+          if (!Number.isFinite(price) || price <= 0) {
+            window.alert("Preco unitario invalido.");
+            return;
+          }
+
+          const buyQty = Math.floor(qty);
+          if (buyQty <= 0) {
+            window.alert("Use quantidade inteira maior que zero.");
+            return;
+          }
+
+          const currentQty = Math.floor(toNumber(asset.quantity, 0));
+          const currentAvg = toNumber(asset.avgPrice, 0);
+          const nextQty = currentQty + buyQty;
+          const nextAvg = ((currentQty * currentAvg) + (buyQty * price)) / nextQty;
+
+          asset.quantity = nextQty;
+          asset.avgPrice = Number(nextAvg.toFixed(4));
+          asset.updatedAt = new Date().toISOString();
+
+          savePortfolio();
+          render();
+          await updateAllData();
+          return;
+        }
+
+        if (action === "agent-sell-part") {
+          const currentQty = Math.floor(toNumber(asset.quantity, 0));
+          if (currentQty <= 1) {
+            window.alert("Ativo com apenas 1 unidade. Use 'Zerar posicao'.");
+            return;
+          }
+
+          const suggested = Math.max(1, Math.floor(currentQty / 2));
+          const qty = promptNumber(`Quantidade a vender de ${asset.ticker} (maximo ${currentQty - 1}):`, String(suggested));
+          if (qty === null) return;
+          const sellQty = Math.floor(qty);
+
+          if (!Number.isFinite(sellQty) || sellQty <= 0 || sellQty >= currentQty) {
+            window.alert("Quantidade invalida para venda parcial.");
+            return;
+          }
+
+          const quotePrice = toNumber(state.quoteCache.get(normalizeTicker(asset.ticker))?.data?.price, NaN);
+          const defaultPrice = Number.isFinite(quotePrice) ? String(Number(quotePrice).toFixed(2)) : String(toNumber(asset.avgPrice, 0));
+          const salePrice = promptNumber(`Preco unitario da venda de ${asset.ticker}:`, defaultPrice);
+          if (salePrice === null) return;
+          if (!Number.isFinite(salePrice) || salePrice <= 0) {
+            window.alert("Preco de venda invalido.");
+            return;
+          }
+
+          try {
+            registerSaleFromPortfolio(asset.id, sellQty, salePrice, {
+              note: "Venda parcial via agente",
+              source: "agent"
+            });
+          } catch (error) {
+            window.alert(error.message || "Falha ao registrar venda parcial.");
+            return;
+          }
+
+          render();
+          await updateAllData();
+          return;
+        }
+
+        if (action === "agent-sell-all") {
+          const confirmed = window.confirm(`Confirmar zeragem total de ${asset.ticker}?`);
+          if (!confirmed) return;
+
+          const quotePrice = toNumber(state.quoteCache.get(normalizeTicker(asset.ticker))?.data?.price, NaN);
+          const defaultPrice = Number.isFinite(quotePrice) ? String(Number(quotePrice).toFixed(2)) : String(toNumber(asset.avgPrice, 0));
+          const salePrice = promptNumber(`Preco unitario para zerar ${asset.ticker}:`, defaultPrice);
+          if (salePrice === null) return;
+          if (!Number.isFinite(salePrice) || salePrice <= 0) {
+            window.alert("Preco de venda invalido.");
+            return;
+          }
+
+          try {
+            registerSaleFromPortfolio(asset.id, Math.floor(toNumber(asset.quantity, 0)), salePrice, {
+              note: "Zeragem via agente",
+              source: "agent"
+            });
+          } catch (error) {
+            window.alert(error.message || "Falha ao zerar posicao.");
+            return;
+          }
+
+          render();
+          await updateAllData();
+          return;
+        }
 
         if (action === "remove-asset") {
           state.portfolio = state.portfolio.filter((a) => a.id !== id);
@@ -2507,31 +3732,26 @@ function bindEvents() {
         }
 
         if (action === "details-asset") {
-          const ticker = normalizeTicker(asset.ticker);
-          const quote = state.quoteCache.get(ticker)?.data || {};
-          const analyst = state.analystCache.get(ticker)?.data || {};
+          const row = getComputedPortfolioRows().find((item) => item.asset.id === id);
+          if (!row) return;
+
+          const ticker = normalizeTicker(row.asset.ticker);
           const historical = state.historicalCache.get(ticker)?.data || [];
           const sma50 = calculateSMA(historical, 50);
           const rsi = calculateRSI(historical, 14);
-          const status = classifyAsset(asset, {
-            currentPrice: quote.price,
-            sma50,
-            rsi,
-            dayDropPct: 0,
-            latestVolume: 0,
-            avgVolume: 0
-          }, analyst);
 
           window.alert(
             [
               `Ticker: ${ticker}`,
-              `Preco atual: ${fmtCurrency(toNumber(quote.price, NaN))}`,
+              `Preco atual: ${fmtCurrency(toNumber(row.currentPrice, NaN))}`,
               `SMA50: ${fmtCurrency(toNumber(sma50, NaN))}`,
               `RSI14: ${fmtNumber(toNumber(rsi, NaN), 2)}`,
-              `Alvo analistas: ${fmtCurrency(toNumber(analyst.targetMean, NaN))}`,
-              `Recomendacao: ${analyst.available ? analyst.recommendation.toUpperCase() : "indisponivel"}`,
-              `Status: ${status}`,
-              `Observacoes: ${asset.notes || "-"}`
+              `Alvo analistas: ${fmtCurrency(toNumber(row.analyst?.targetMean, NaN))}`,
+              `Recomendacao: ${row.analyst?.available ? String(row.analyst.recommendation || "").toUpperCase() : "indisponivel"}`,
+              `Status tecnico: ${row.status}`,
+              `Sinal final: ${row.finalSignal}`,
+              `Motivo: ${row.finalSignalReason}`,
+              `Observacoes: ${row.asset.notes || "-"}`
             ].join("\n")
           );
         }
@@ -2552,6 +3772,33 @@ function bindEvents() {
         const ticker = normalizeTicker(button.dataset.ticker);
         const row = state.top10.find((item) => normalizeTicker(item.ticker) === ticker);
         if (!row) return;
+
+        if (action === "top10-agent-explain") {
+          const insight = buildTop10AgentInsights().find((item) => item.ticker === ticker);
+          if (!insight) return;
+
+          const reasonsText = insight.reasons.length
+            ? insight.reasons.map((reason, index) => `${index + 1}. ${reason}`).join("\n")
+            : "Sem motivos detalhados no momento.";
+
+          window.alert(
+            [
+              `Agente Orion | ${insight.ticker}`,
+              `Acao sugerida: ${insight.action}`,
+              `Score: ${insight.score}/100`,
+              `Preco atual: ${fmtCurrency(insight.currentPrice)}`,
+              `Preco-alvo medio: ${fmtCurrency(insight.targetMean)}`,
+              `Upside: ${fmtPct(insight.upsidePct)}`,
+              `Cobertura: ${fmtNumber(insight.analystsCount, 0)} analistas`,
+              "",
+              "Motivos:",
+              reasonsText,
+              "",
+              "Aviso: suporte a decisao, nao substitui sua avaliacao final."
+            ].join("\n")
+          );
+          return;
+        }
 
         if (action === "add-top10-watchlist") {
           const exists = state.watchlist.some((item) => normalizeTicker(item.ticker) === ticker);
@@ -2665,6 +3912,48 @@ function bindEvents() {
       };
     });
   }
+
+  const panelSales = document.getElementById("panel-sales");
+  if (panelSales) {
+    const salesForm = document.getElementById("salesForm");
+    if (salesForm) {
+      salesForm.onsubmit = async (event) => {
+        event.preventDefault();
+        const fd = new FormData(salesForm);
+        const assetId = String(fd.get("assetId") || "").trim();
+        const quantity = toNumber(fd.get("quantity"), 0);
+        const salePrice = toNumber(fd.get("salePrice"), 0);
+        const date = String(fd.get("date") || "").trim();
+        const note = String(fd.get("note") || "").trim();
+
+        try {
+          registerSaleFromPortfolio(assetId, quantity, salePrice, {
+            date,
+            note,
+            source: "manual"
+          });
+        } catch (error) {
+          window.alert(error.message || "Falha ao registrar venda.");
+          return;
+        }
+
+        salesForm.reset();
+        render();
+        await updateAllData();
+      };
+    }
+
+    panelSales.querySelectorAll("button[data-action='remove-sale-record']").forEach((button) => {
+      button.onclick = () => {
+        const id = button.dataset.id;
+        if (!id) return;
+        if (!window.confirm("Remover este registro de venda do historico?")) return;
+        state.salesHistory = state.salesHistory.filter((item) => item.id !== id);
+        saveSalesHistory();
+        render();
+      };
+    });
+  }
 }
 
 function resetAutoRefresh() {
@@ -2679,6 +3968,7 @@ function resetAutoRefresh() {
 
 async function boot() {
   loadPortfolio();
+  loadSalesHistory();
   loadWatchlist();
   loadAlerts();
   loadSettings();

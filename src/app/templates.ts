@@ -174,9 +174,9 @@ function renderPortfolio(view: AppViewModel): string {
     <section class="card">
       <h3>Posicao atual da carteira</h3>
       <table>
-        <thead><tr><th>Ticker</th><th>Tipo</th><th>Quantidade</th><th>Preco medio</th><th>Investido</th><th>Cotacao atual</th><th>Valor atual</th><th>P/L</th></tr></thead>
+        <thead><tr><th>Ticker</th><th>Tipo</th><th>Quantidade</th><th>Preco medio</th><th>Investido</th><th>Cotacao atual</th><th>Valor atual</th><th>P/L</th><th>Acoes</th></tr></thead>
         <tbody>
-          ${view.positions.length === 0 ? '<tr><td colspan="8">Sem posicoes ativas.</td></tr>' : view.positions.map((position) => {
+          ${view.positions.length === 0 ? '<tr><td colspan="9">Sem posicoes ativas.</td></tr>' : view.positions.map((position) => {
             const quote = view.quotes.get(position.ticker)
             const change = quote?.changePercent ?? 0
             const changeClass = getDirectionClass(change)
@@ -191,6 +191,11 @@ function renderPortfolio(view: AppViewModel): string {
               <td><span class="${changeClass}">${formatCurrency(position.currentPrice)}</span> <span class="pill quote-pill ${changeClass === 'status-up' ? 'up' : changeClass === 'status-down' ? 'down' : 'neutral'}">${sign}${formatPercent(change)}</span></td>
               <td>${formatCurrency(position.marketValue)}</td>
               <td class="${position.pnlValue >= 0 ? 'status-up' : 'status-down'}">${formatCurrency(position.pnlValue)} (${formatPercent(position.pnlPercent)})</td>
+              <td class="table-actions">
+                <button data-action="portfolio-buy-more" data-ticker="${position.ticker}">Comprei mais</button>
+                <button data-action="portfolio-sell-part" data-ticker="${position.ticker}" data-quantity="${position.quantity}" data-price="${position.currentPrice}">Vendi parte</button>
+                <button data-action="portfolio-clear-position" data-ticker="${position.ticker}" data-quantity="${position.quantity}" data-price="${position.currentPrice}" class="danger">Zerar posicao</button>
+              </td>
             </tr>
           `
           }).join('')}

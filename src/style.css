@@ -288,6 +288,14 @@ td button {
   margin-right: 6px;
 }
 
+.table-actions {
+  min-width: 280px;
+}
+
+.table-actions button {
+  margin: 0 6px 6px 0;
+}
+
 th {
   color: #5f6f8b;
   font-weight: 600;
@@ -379,5 +387,9 @@ th {
   .form-grid,
   .form-inline {
     grid-template-columns: 1fr;
+  }
+
+  .table-actions {
+    min-width: 220px;
   }
 }
