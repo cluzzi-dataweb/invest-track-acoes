@@ -700,6 +700,38 @@ td.negative {
   border-color: #334155;
 }
 
+th.context-col {
+  color: #8ea7c8;
+}
+
+th.decision-col {
+  color: #d5e7ff;
+  text-shadow: 0 0 8px rgba(46, 168, 255, 0.2);
+}
+
+td.consensus-cell .badge {
+  opacity: 0.88;
+  filter: saturate(0.9);
+}
+
+td.decision-cell .badge {
+  font-weight: 800;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+}
+
+.signal-reason-cell {
+  max-width: 280px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #b9cde5;
+  font-size: 0.8rem;
+}
+
+.table-guidance {
+  margin: 4px 0 10px;
+}
+
 .alert-row td {
   transition: background-color 140ms ease;
 }

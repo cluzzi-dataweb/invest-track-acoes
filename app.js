@@ -808,23 +808,36 @@ function getFinalSignal(asset) {
     currentPrice >= technicalSellPrice * 0.985;
 
   const upsideNonPositive = Number.isFinite(upsidePct) && upsidePct <= 0;
+  const upsideClearlyNegative = Number.isFinite(upsidePct) && upsidePct <= -5;
   const upsideVeryLowWithProfit = Number.isFinite(upsidePct) && upsidePct <= 5 && Number.isFinite(pnlPct) && pnlPct >= 12;
   const lowUpsideWithProfit = Number.isFinite(upsidePct) && upsidePct <= 10 && Number.isFinite(pnlPct) && pnlPct >= 15;
+  const hasHardExitByTechnical = isNearTechnicalSell && Number.isFinite(pnlPct) && pnlPct >= 15 && Number.isFinite(upsidePct) && upsidePct <= 3;
+  const hasHardExitByAsymmetry = upsideClearlyNegative || (upsideNonPositive && Number.isFinite(pnlPct) && pnlPct >= 20);
 
   if (
     hasStrongExitStatus ||
     recommendation === "VENDER" ||
-    upsideNonPositive ||
-    upsideVeryLowWithProfit ||
-    (isNearTechnicalSell && Number.isFinite(pnlPct) && pnlPct >= 8) ||
+    hasHardExitByAsymmetry ||
+    hasHardExitByTechnical ||
     (hasAttentionStatus && recommendation === "REDUZIR" && Number.isFinite(upsidePct) && upsidePct <= 8)
   ) {
     return "VENDER";
   }
 
+  // Evita venda agressiva em cenarios de consenso comprador com upside positivo sem gatilho forte.
+  if (
+    recommendation === "COMPRAR" &&
+    Number.isFinite(upsidePct) &&
+    upsidePct > 0 &&
+    hasAttentionStatus
+  ) {
+    return (Number.isFinite(pnlPct) && pnlPct >= 12) ? "REDUZIR" : "MANTER";
+  }
+
   if (
     status === "REDUZIR" ||
     lowUpsideWithProfit ||
+    upsideVeryLowWithProfit ||
     (hasAttentionStatus && Number.isFinite(pnlPct) && pnlPct >= 10) ||
     recommendation === "REDUZIR"
   ) {
@@ -841,13 +854,43 @@ function getFinalSignal(asset) {
 }
 
 function getFinalSignalReason(asset) {
+  const consensus = normalizeAnalystRecommendation(
+    asset?.analystRecommendation ?? asset?.analyst?.recommendation ?? asset?.recommendation
+  );
   const signal = getFinalSignal(asset);
+  const upsidePct = toNumber(asset?.upsidePct, NaN);
+  const pnlPct = toNumber(asset?.pnlPct, NaN);
+  const status = String(asset?.status || "").toUpperCase();
+
+  if (consensus && consensus !== signal) {
+    if (consensus === "COMPRAR" && signal === "REDUZIR") {
+      return "Analistas positivos, mas risco/retorno da posicao favorece realizacao parcial";
+    }
+
+    if (consensus === "COMPRAR" && signal === "VENDER") {
+      return "Saida tatica apesar de consenso positivo";
+    }
+
+    if (signal === "VENDER" && Number.isFinite(upsidePct) && upsidePct <= 0) {
+      return "Consenso diferente, mas a assimetria atual da posicao ficou desfavoravel";
+    }
+
+    return "Consenso dos analistas diverge da decisao tatica da posicao";
+  }
 
   if (signal === "COMPRAR") {
     return "Upside atrativo com consenso positivo";
   }
 
   if (signal === "REDUZIR") {
+    if (Number.isFinite(pnlPct) && pnlPct >= 15 && Number.isFinite(upsidePct) && upsidePct <= 10) {
+      return "Lucro relevante com upside remanescente limitado";
+    }
+
+    if (status === "ATENCAO") {
+      return "Sinal de atencao com melhor relacao em realizacao parcial";
+    }
+
     return "Lucro relevante com upside remanescente limitado";
   }
 
@@ -856,6 +899,27 @@ function getFinalSignalReason(asset) {
   }
 
   return "Sem gatilho claro de compra adicional ou saida";
+}
+
+function getConsensusDecisionHint(asset) {
+  const consensus = normalizeAnalystRecommendation(
+    asset?.analystRecommendation ?? asset?.analyst?.recommendation ?? asset?.recommendation
+  );
+  const finalSignal = getFinalSignal(asset);
+
+  if (!consensus || consensus === finalSignal) {
+    return "";
+  }
+
+  if (consensus === "COMPRAR" && finalSignal === "REDUZIR") {
+    return "Consenso positivo, mas a posicao ja capturou boa parte do upside";
+  }
+
+  if (consensus === "COMPRAR" && finalSignal === "VENDER") {
+    return "Analistas seguem compradores, mas o risco/retorno atual favorece saida tatica";
+  }
+
+  return "Consenso dos analistas e decisao da posicao usam horizontes diferentes";
 }
 
 function classifyAsset(asset, indicators, analystData) {
@@ -2382,6 +2446,9 @@ function renderPortfolioPanel(rows) {
     .map((row) => {
       const ticker = normalizeTicker(row.asset.ticker);
       const analystRec = row.analyst.available ? row.analyst.recommendation : "";
+      const reasonText = row.finalSignalReason;
+      const conflictHint = getConsensusDecisionHint(row);
+      const reasonWithHint = conflictHint ? `${reasonText}. ${conflictHint}` : reasonText;
       const tone = row.finalSignal === "VENDER"
         ? "sell"
         : row.finalSignal === "COMPRAR"
@@ -2416,11 +2483,12 @@ function renderPortfolioPanel(rows) {
           <td class="${currentPriceClass}">${fmtCurrency(toNumber(row.asset.buyMorePrice, NaN))}</td>
           <td class="${targetMeanClass}">${fmtCurrency(toNumber(row.analyst.targetMean, NaN))}</td>
           <td>${fmtCurrency(toNumber(row.analyst.targetMax, NaN))}</td>
-          <td>${recommendationBadge(analystRec)}</td>
+          <td class="consensus-cell">${recommendationBadge(analystRec)}</td>
           <td class="${toNumber(row.upsidePct, 0) >= 0 ? "positive" : "negative"}">${fmtPct(row.upsidePct)}</td>
           <td class="${technicalSellClass}">${fmtCurrency(row.technicalSellPrice)}</td>
           <td>${statusBadge(row.status)}</td>
-          <td>${finalSignalBadge(row.finalSignal, row.finalSignalReason)}</td>
+          <td class="decision-cell">${finalSignalBadge(row.finalSignal, reasonWithHint)}</td>
+          <td class="signal-reason-cell" title="${escapeHtml(reasonWithHint)}">${escapeHtml(reasonText)}</td>
           <td><button data-action="agent-explain-asset" data-id="${row.asset.id}">Agente</button></td>
           <td><button data-action="details-asset" data-id="${row.asset.id}">Detalhes</button></td>
           <td><button data-action="edit-asset" data-id="${row.asset.id}">Editar</button></td>
@@ -2432,6 +2500,7 @@ function renderPortfolioPanel(rows) {
 
   panel.innerHTML = `
     <h2 class="panel-title">Minha Carteira</h2>
+    <p class="muted-text table-guidance">Consenso analistas = contexto de mercado. Sinal final = decisao pratica da sua posicao.</p>
     ${renderDecisionAgent(rows)}
     <form id="portfolioForm">
       <input type="hidden" name="id" />
@@ -2496,11 +2565,12 @@ function renderPortfolioPanel(rows) {
             <th>Preco comprar mais</th>
             <th>Preco-alvo analistas</th>
             <th>Alvo maximo analistas</th>
-            <th>Recomendacao media</th>
+            <th class="context-col">Consenso analistas</th>
             <th>Upside ate alvo %</th>
             <th>Preco tecnico venda</th>
             <th>Status</th>
-            <th>Sinal final</th>
+            <th class="decision-col">Sinal final</th>
+            <th>Motivo</th>
             <th>Agente</th>
             <th>Detalhes</th>
             <th>Editar</th>
@@ -2508,7 +2578,7 @@ function renderPortfolioPanel(rows) {
           </tr>
         </thead>
         <tbody>
-          ${rowsHtml || '<tr><td colspan="21" class="empty">Nenhum ativo cadastrado.</td></tr>'}
+          ${rowsHtml || '<tr><td colspan="22" class="empty">Nenhum ativo cadastrado.</td></tr>'}
         </tbody>
       </table>
     </div>
