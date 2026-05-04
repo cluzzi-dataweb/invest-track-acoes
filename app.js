@@ -3733,7 +3733,28 @@ function bindEvents() {
           updateStatusLine();
           window.alert(loaded ? "Conta conectada e dados carregados da nuvem." : "Conta conectada. Seu backup em nuvem foi iniciado.");
         } catch (error) {
-          window.alert(error.message || "Falha ao entrar.");
+          const message = String(error?.message || "Falha ao entrar.");
+          const invalidCredentials = message.includes("401") && message.toLowerCase().includes("senha");
+
+          if (invalidCredentials) {
+            const shouldCreate = window.confirm("Conta nao encontrada para este e-mail/senha. Deseja criar a conta agora com esses dados?");
+
+            if (shouldCreate) {
+              try {
+                await registerCloudAccount(email, password);
+                await syncLegacyCloudData(false);
+                render();
+                updateStatusLine();
+                window.alert("Conta criada e conectada com sucesso.");
+                return;
+              } catch (registerError) {
+                window.alert(registerError?.message || "Falha ao criar conta apos tentativa de login.");
+                return;
+              }
+            }
+          }
+
+          window.alert(message || "Falha ao entrar.");
         }
       };
     }
