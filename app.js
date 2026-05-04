@@ -1887,13 +1887,22 @@ async function fetchStockPrice(ticker) {
   const base = getApiBase();
 
   try {
-    const payload = await fetchJson(`${base}/api/market/quote/${encodeURIComponent(cleanTicker)}`);
+    const payload = await fetchJson(`${base}/api/market/quote/${encodeURIComponent(cleanTicker)}?fresh=1`);
+    const quoteTimeRaw = payload?.quote?.regularMarketTime;
+    const quoteTimestamp = quoteTimeRaw ? Date.parse(String(quoteTimeRaw)) : NaN;
+    const isStaleQuote = Number.isFinite(quoteTimestamp) && (Date.now() - quoteTimestamp) > (45 * 60 * 1000);
+
+    if (isStaleQuote) {
+      throw new Error("cotacao backend defasada");
+    }
+
     const data = {
       ticker: cleanTicker,
       name: payload?.quote?.name || cleanTicker,
       price: toNumber(payload?.quote?.regularMarketPrice, NaN),
       variationPct: toNumber(payload?.quote?.regularMarketChangePercent, 0),
-      source: "backend"
+      source: "backend",
+      quoteTime: quoteTimeRaw || null
     };
     state.quoteCache.set(cleanTicker, { data, fetchedAt: Date.now() });
     return data;
@@ -1911,7 +1920,8 @@ async function fetchStockPrice(ticker) {
       name: item.longName || item.shortName || cleanTicker,
       price: toNumber(item.regularMarketPrice, NaN),
       variationPct: toNumber(item.regularMarketChangePercent, 0),
-      source: "brapi"
+      source: "brapi",
+      quoteTime: item.regularMarketTime || null
     };
     state.quoteCache.set(cleanTicker, { data, fetchedAt: Date.now() });
     return data;

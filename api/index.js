@@ -333,7 +333,9 @@ async function fetchJsonWithTimeout(url) {
   }
 }
 
-async function getQuotesByTickers(tickers) {
+async function getQuotesByTickers(tickers, options = {}) {
+  const bypassCache = options?.bypassCache === true
+
   if (!tickers.length) {
     return []
   }
@@ -343,6 +345,11 @@ async function getQuotesByTickers(tickers) {
   const missing = []
 
   for (const ticker of normalized) {
+    if (bypassCache) {
+      missing.push(ticker)
+      continue
+    }
+
     const cacheKey = ticker
     const hit = getCacheValue(quoteCache, cacheKey)
 
@@ -774,7 +781,10 @@ export default async function handler(req, res) {
         return
       }
 
-      const quotes = await getQuotesByTickers([ticker])
+      const forceFresh = String(url.searchParams.get('fresh') ?? '').toLowerCase()
+      const bypassCache = forceFresh === '1' || forceFresh === 'true' || forceFresh === 'yes'
+
+      const quotes = await getQuotesByTickers([ticker], { bypassCache })
 
       if (!quotes.length) {
         sendJson(res, 404, { error: 'Ativo nao encontrado.' })
