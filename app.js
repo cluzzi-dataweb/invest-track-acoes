@@ -141,6 +141,39 @@ function getDefaultApiBaseUrl() {
   return isLocal ? "http://localhost:3333" : "";
 }
 
+function isLocalHostname(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  return host === "localhost" || host === "127.0.0.1";
+}
+
+function sanitizeApiBaseUrl(input) {
+  const raw = String(input || "").trim();
+
+  if (!raw) {
+    return "";
+  }
+
+  try {
+    const url = new URL(raw);
+    const pageIsLocal = isLocalHostname(window.location.hostname);
+    const apiIsLocal = isLocalHostname(url.hostname);
+
+    // If app is running on a public domain, discard stale localhost API settings.
+    if (!pageIsLocal && apiIsLocal) {
+      return "";
+    }
+
+    // Avoid mixed-content failures when app runs on HTTPS.
+    if (window.location.protocol === "https:" && url.protocol === "http:" && !apiIsLocal) {
+      return "";
+    }
+
+    return raw.replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+}
+
 let _renderPending = false;
 
 function isUserTyping() {
@@ -290,6 +323,8 @@ function loadSettings() {
     ...state.settings,
     ...parsed
   };
+
+  state.settings.apiBaseUrl = sanitizeApiBaseUrl(state.settings.apiBaseUrl);
 }
 
 function saveAuthToken(token) {
@@ -315,7 +350,7 @@ function clearAuthSession() {
 }
 
 function getApiBase() {
-  return state.settings.apiBaseUrl.replace(/\/$/, "");
+  return sanitizeApiBaseUrl(state.settings.apiBaseUrl);
 }
 
 function getCloudStatusText() {
@@ -3559,7 +3594,7 @@ function bindEvents() {
       event.preventDefault();
       const fd = new FormData(settingsForm);
 
-      state.settings.apiBaseUrl = String(fd.get("apiBaseUrl") || state.settings.apiBaseUrl).trim();
+      state.settings.apiBaseUrl = sanitizeApiBaseUrl(String(fd.get("apiBaseUrl") || state.settings.apiBaseUrl));
       state.settings.autoRefreshMs = Math.max(10000, toNumber(fd.get("autoRefreshMs"), 60000));
       state.settings.backendTop10Endpoint = String(fd.get("backendTop10Endpoint") || "/api/market/top10-analysts").trim();
       state.settings.backendAnalystEndpoint = String(fd.get("backendAnalystEndpoint") || "/api/market/analyst").trim();
