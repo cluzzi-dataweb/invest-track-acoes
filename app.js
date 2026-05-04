@@ -2522,13 +2522,19 @@ function getComputedPortfolioRows() {
 function getSummaryStats(rows) {
   const invested = rows.reduce((acc, row) => acc + row.investedValue, 0);
   const current = rows.reduce((acc, row) => acc + row.currentValue, 0);
-  const pnl = current - invested;
-  const pnlPct = invested > 0 ? (pnl / invested) * 100 : 0;
+  const unrealizedPnl = current - invested;
+  const realizedPnl = state.salesHistory.reduce((acc, item) => acc + toNumber(item.pnlValue, 0), 0);
+  const realizedCostBasis = state.salesHistory.reduce((acc, item) => acc + toNumber(item.costBasis, 0), 0);
+  const pnl = unrealizedPnl + realizedPnl;
+  const totalCostBasis = invested + realizedCostBasis;
+  const pnlPct = totalCostBasis > 0 ? (pnl / totalCostBasis) * 100 : 0;
   const activeAlerts = state.alerts.length;
 
   return {
     invested,
     current,
+    unrealizedPnl,
+    realizedPnl,
     pnl,
     pnlPct,
     assets: rows.length,
@@ -2552,7 +2558,7 @@ function renderSummaryCards(rows) {
       <div class="card-value">${fmtCurrency(stats.current)}</div>
     </article>
     <article class="card">
-      <div class="card-label">Lucro/Prejuizo Total</div>
+      <div class="card-label">Lucro/Prejuizo Total (realizado + em aberto)</div>
       <div class="card-value ${stats.pnl >= 0 ? "positive" : "negative"}">
         ${fmtCurrency(stats.pnl)} (${fmtPct(stats.pnlPct)})
       </div>
