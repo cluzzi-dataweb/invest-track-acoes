@@ -63,6 +63,46 @@ function setCorsHeaders(res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization')
 }
 
+async function readRequestBody(req) {
+  if (req.body && typeof req.body === 'object') {
+    return req.body
+  }
+
+  if (typeof req.body === 'string') {
+    try {
+      return JSON.parse(req.body)
+    } catch {
+      return {}
+    }
+  }
+
+  if (req.method !== 'POST' && req.method !== 'PUT') {
+    return {}
+  }
+
+  try {
+    const chunks = []
+
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)))
+    }
+
+    if (chunks.length === 0) {
+      return {}
+    }
+
+    const raw = Buffer.concat(chunks).toString('utf-8').trim()
+
+    if (!raw) {
+      return {}
+    }
+
+    return JSON.parse(raw)
+  } catch {
+    return {}
+  }
+}
+
 function normalizeEmail(input) {
   return String(input ?? '').trim().toLowerCase()
 }
@@ -482,6 +522,7 @@ export default async function handler(req, res) {
 
   const url = new URL(req.url, 'http://localhost')
   const pathname = url.pathname
+  const requestBody = await readRequestBody(req)
 
   if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'PUT') {
     sendJson(res, 405, { error: 'Metodo nao suportado nesta API.' })
@@ -490,8 +531,8 @@ export default async function handler(req, res) {
 
   try {
     if (pathname === '/api/auth/register' && req.method === 'POST') {
-      const email = normalizeEmail(req.body?.email)
-      const password = String(req.body?.password ?? '')
+      const email = normalizeEmail(requestBody?.email)
+      const password = String(requestBody?.password ?? '')
 
       if (!isValidEmail(email)) {
         sendJson(res, 400, { error: 'Informe um e-mail valido.' })
@@ -534,8 +575,8 @@ export default async function handler(req, res) {
     }
 
     if (pathname === '/api/auth/login' && req.method === 'POST') {
-      const email = normalizeEmail(req.body?.email)
-      const password = String(req.body?.password ?? '')
+      const email = normalizeEmail(requestBody?.email)
+      const password = String(requestBody?.password ?? '')
       const user = isCloudDatabaseConfigured() ? await getCloudUserByEmail(email) : authUsers.get(email)
 
       if (!user || !verifyPassword(password, user.passwordSalt, user.passwordHash)) {
@@ -588,7 +629,7 @@ export default async function handler(req, res) {
       }
 
       if (req.method === 'PUT') {
-        const normalizedData = normalizeAppData(req.body?.data ?? EMPTY_APP_DATA)
+        const normalizedData = normalizeAppData(requestBody?.data ?? EMPTY_APP_DATA)
         const payload = isCloudDatabaseConfigured()
           ? {
               userId: auth.userId,
@@ -638,11 +679,11 @@ export default async function handler(req, res) {
         const payload = isCloudDatabaseConfigured()
           ? {
               userId: auth.userId,
-              ...(await writeCloudDataByUserId(`legacy:${auth.userId}`, req.body?.data ?? {})),
+              ...(await writeCloudDataByUserId(`legacy:${auth.userId}`, requestBody?.data ?? {})),
             }
           : {
               userId: auth.userId,
-              data: req.body?.data ?? {},
+              data: requestBody?.data ?? {},
               updatedAt: new Date().toISOString(),
             }
 
@@ -678,7 +719,7 @@ export default async function handler(req, res) {
         return
       }
 
-      const data = normalizeAppData(req.body?.data ?? EMPTY_APP_DATA)
+      const data = normalizeAppData(requestBody?.data ?? EMPTY_APP_DATA)
       const payload = {
         profileId,
         data,
