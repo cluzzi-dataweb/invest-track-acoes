@@ -204,6 +204,10 @@ const state = {
   quoteCache: new Map(),
   historicalCache: new Map(),
   analystCache: new Map(),
+  apiHealth: {
+    status: "unknown",
+    message: ""
+  },
   marketSearchCache: new Map(),
   top10: [],
   top10Message: "",
@@ -362,6 +366,19 @@ function getCloudStatusText() {
     : state.session.cloudStatus;
 
   return `${accountText} | nuvem ${syncText}`;
+}
+
+function getApiStatusText() {
+  if (state.apiHealth.status === "ok") {
+    return "api online";
+  }
+
+  if (state.apiHealth.status === "error") {
+    const detail = state.apiHealth.message ? ` (${state.apiHealth.message})` : "";
+    return `api offline${detail}`;
+  }
+
+  return "api verificando";
 }
 
 function buildLegacyCloudPayload() {
@@ -1619,12 +1636,40 @@ async function fetchJson(url, options = {}) {
     });
 
     if (!response.ok) {
-      throw new Error(`${response.status} ${response.statusText}`);
+      let details = "";
+
+      try {
+        const text = await response.text();
+        if (text) {
+          const parsed = parseJsonSafe(text, null);
+          details = typeof parsed?.error === "string" && parsed.error
+            ? parsed.error
+            : text;
+        }
+      } catch {
+        details = "";
+      }
+
+      throw new Error(details ? `${response.status} ${details}` : `${response.status} ${response.statusText}`);
     }
 
     return await response.json();
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+async function checkApiHealth() {
+  try {
+    const payload = await fetchJson(`${getApiBase()}/api/health`);
+    state.apiHealth.status = payload?.status === "ok" ? "ok" : "error";
+    state.apiHealth.message = payload?.status === "ok" ? "" : "resposta invalida";
+  } catch (error) {
+    state.apiHealth.status = "error";
+    state.apiHealth.message = String(error?.message || "falha ao conectar")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80);
   }
 }
 
@@ -1640,7 +1685,7 @@ async function searchMarket(query) {
     return hit.data;
   }
 
-  const base = state.settings.apiBaseUrl.replace(/\/$/, "");
+  const base = getApiBase();
   try {
     const payload = await fetchJson(`${base}/api/market/search?q=${encodeURIComponent(term)}`);
     const results = Array.isArray(payload?.results) ? payload.results : [];
@@ -1839,7 +1884,7 @@ async function fetchStockPrice(ticker) {
     return cache.data;
   }
 
-  const base = state.settings.apiBaseUrl.replace(/\/$/, "");
+  const base = getApiBase();
 
   try {
     const payload = await fetchJson(`${base}/api/market/quote/${encodeURIComponent(cleanTicker)}`);
@@ -1888,7 +1933,7 @@ async function fetchHistoricalData(ticker) {
     return cache.data;
   }
 
-  const base = state.settings.apiBaseUrl.replace(/\/$/, "");
+  const base = getApiBase();
 
   try {
     const backend = await fetchJson(`${base}/api/market/history/${encodeURIComponent(cleanTicker)}?range=6mo&interval=1d`);
@@ -1930,7 +1975,7 @@ async function fetchAnalystData(ticker) {
     return cache.data;
   }
 
-  const base = state.settings.apiBaseUrl.replace(/\/$/, "");
+  const base = getApiBase();
 
   try {
     const endpoint = `${base}${state.settings.backendAnalystEndpoint}/${encodeURIComponent(cleanTicker)}`;
@@ -2008,7 +2053,7 @@ async function fetchAnalystData(ticker) {
 }
 
 async function fetchTop10Analysts() {
-  const base = state.settings.apiBaseUrl.replace(/\/$/, "");
+  const base = getApiBase();
 
   try {
     const endpoint = `${base}${state.settings.backendTop10Endpoint}`;
@@ -2224,9 +2269,10 @@ function syncPortfolioAlerts() {
 function updateStatusLine() {
   const line = document.getElementById("statusLine");
   if (!line) return;
+  const apiStatus = getApiStatusText();
 
   if (state.isUpdating) {
-    line.textContent = `Atualizando dados de mercado... | ${getCloudStatusText()}`;
+    line.textContent = `Atualizando dados de mercado... | ${apiStatus} | ${getCloudStatusText()}`;
     return;
   }
 
@@ -2235,16 +2281,16 @@ function updateStatusLine() {
       ? ` | ultima valida: ${fmtDate(state.lastUpdatedAt)}`
       : "";
     const reason = state.lastUpdateErrorMessage ? ` (${state.lastUpdateErrorMessage})` : "";
-    line.textContent = `Falha de conexao ao atualizar cotacoes${reason} | tentando reconectar${lastOk} | ${getCloudStatusText()}`;
+    line.textContent = `Falha de conexao ao atualizar cotacoes${reason} | tentando reconectar${lastOk} | ${apiStatus} | ${getCloudStatusText()}`;
     return;
   }
 
   if (!state.lastUpdatedAt) {
-    line.textContent = `Aguardando primeira atualizacao | ${getCloudStatusText()}`;
+    line.textContent = `Aguardando primeira atualizacao | ${apiStatus} | ${getCloudStatusText()}`;
     return;
   }
 
-  line.textContent = `Ultima atualizacao: ${fmtDate(state.lastUpdatedAt)} | refresh ${Math.round(state.settings.autoRefreshMs / 1000)}s | ${getCloudStatusText()}`;
+  line.textContent = `Ultima atualizacao: ${fmtDate(state.lastUpdatedAt)} | refresh ${Math.round(state.settings.autoRefreshMs / 1000)}s | ${apiStatus} | ${getCloudStatusText()}`;
 }
 
 async function updateAllData() {
@@ -4174,6 +4220,7 @@ async function boot() {
 
   createAppLayout();
   render();
+  await checkApiHealth();
   updateStatusLine();
 
   const restored = await restoreCloudSession();
@@ -4199,6 +4246,11 @@ async function boot() {
 
   await updateAllData();
   resetAutoRefresh();
+
+  setInterval(async () => {
+    await checkApiHealth();
+    updateStatusLine();
+  }, 30000);
 }
 
 boot();
