@@ -11,6 +11,10 @@ export class LiveQuoteSocket {
   private readonly onQuotes: (quotes: QuoteData[]) => void
   private readonly onStatus?: (status: 'connecting' | 'connected' | 'disconnected' | 'error') => void
   private socket?: WebSocket
+  private reconnectTimer?: number
+  private reconnectAttempts = 0
+  private manuallyDisconnected = false
+  private subscribedTickers: string[] = []
 
   constructor(options: LiveSocketOptions) {
     this.url = options.url
@@ -19,24 +23,72 @@ export class LiveQuoteSocket {
   }
 
   connect(): void {
-    this.disconnect()
+    this.manuallyDisconnected = false
+    this.clearReconnectTimer()
+    this.openSocket()
+  }
+
+  disconnect(): void {
+    this.manuallyDisconnected = true
+    this.clearReconnectTimer()
+
+    if (this.socket) {
+      this.socket.close()
+      this.socket = undefined
+    }
+  }
+
+  subscribe(tickers: string[]): void {
+    const unique = [...new Set(tickers.map((ticker) => String(ticker ?? '').trim().toUpperCase()).filter(Boolean))]
+    this.subscribedTickers = unique
+
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return
+    }
+
+    this.socket.send(JSON.stringify({ type: 'subscribe', tickers: this.subscribedTickers }))
+  }
+
+  private openSocket(): void {
+    if (this.manuallyDisconnected) {
+      return
+    }
+
+    if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
+      return
+    }
 
     this.onStatus?.('connecting')
-    this.socket = new WebSocket(this.url)
+    const socket = new WebSocket(this.url)
+    this.socket = socket
 
-    this.socket.addEventListener('open', () => {
+    socket.addEventListener('open', () => {
+      if (this.socket !== socket) {
+        return
+      }
+
+      this.reconnectAttempts = 0
       this.onStatus?.('connected')
+      this.sendSubscribeIfNeeded()
     })
 
-    this.socket.addEventListener('close', () => {
+    socket.addEventListener('close', () => {
+      if (this.socket === socket) {
+        this.socket = undefined
+      }
+
       this.onStatus?.('disconnected')
+
+      if (!this.manuallyDisconnected) {
+        this.scheduleReconnect()
+      }
     })
 
-    this.socket.addEventListener('error', () => {
+    socket.addEventListener('error', () => {
       this.onStatus?.('error')
     })
 
-    this.socket.addEventListener('message', (event) => {
+    socket.addEventListener('message', (event) => {
       const payload = this.parseMessage(event.data)
 
       if (!payload || payload.type !== 'quotes' || !Array.isArray(payload.data)) {
@@ -53,19 +105,37 @@ export class LiveQuoteSocket {
     })
   }
 
-  disconnect(): void {
-    if (this.socket) {
-      this.socket.close()
-      this.socket = undefined
-    }
-  }
-
-  subscribe(tickers: string[]): void {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+  private sendSubscribeIfNeeded(): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN || this.subscribedTickers.length === 0) {
       return
     }
 
-    this.socket.send(JSON.stringify({ type: 'subscribe', tickers }))
+    this.socket.send(JSON.stringify({ type: 'subscribe', tickers: this.subscribedTickers }))
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) {
+      return
+    }
+
+    const baseDelayMs = 1000
+    const maxDelayMs = 30000
+    const delayMs = Math.min(baseDelayMs * (2 ** this.reconnectAttempts), maxDelayMs)
+
+    this.reconnectAttempts += 1
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = undefined
+      this.openSocket()
+    }, delayMs)
+  }
+
+  private clearReconnectTimer(): void {
+    if (!this.reconnectTimer) {
+      return
+    }
+
+    window.clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = undefined
   }
 
   private parseMessage(raw: unknown): { type?: string; data?: unknown[] } | null {

@@ -176,8 +176,11 @@ const state = {
   top10Message: "",
   activeTab: "portfolio",
   refreshTimer: null,
+  recoveryTimer: null,
   isUpdating: false,
   lastUpdatedAt: null,
+  lastUpdateErrorAt: null,
+  lastUpdateErrorMessage: "",
   isApplyingCloudSnapshot: false,
   session: {
     token: null,
@@ -2192,6 +2195,15 @@ function updateStatusLine() {
     return;
   }
 
+  if (state.lastUpdateErrorAt) {
+    const lastOk = state.lastUpdatedAt
+      ? ` | ultima valida: ${fmtDate(state.lastUpdatedAt)}`
+      : "";
+    const reason = state.lastUpdateErrorMessage ? ` (${state.lastUpdateErrorMessage})` : "";
+    line.textContent = `Falha de conexao ao atualizar cotacoes${reason} | tentando reconectar${lastOk} | ${getCloudStatusText()}`;
+    return;
+  }
+
   if (!state.lastUpdatedAt) {
     line.textContent = `Aguardando primeira atualizacao | ${getCloudStatusText()}`;
     return;
@@ -2215,12 +2227,18 @@ async function updateAllData() {
     for (const t of state.top10) tickers.add(normalizeTicker(t.ticker));
     for (const al of state.alerts) tickers.add(normalizeTicker(al.ticker));
 
+    let successfulQuoteCount = 0;
+
     const jobs = [...tickers].filter(Boolean).map(async (ticker) => {
       const [quote, historical, analyst] = await Promise.all([
         fetchStockPrice(ticker),
         fetchHistoricalData(ticker),
         fetchAnalystData(ticker)
       ]);
+
+      if (Number.isFinite(toNumber(quote?.price, NaN))) {
+        successfulQuoteCount += 1;
+      }
 
       const sma50 = calculateSMA(historical, 50);
       const rsi = calculateRSI(historical, 14);
@@ -2277,6 +2295,20 @@ async function updateAllData() {
     });
 
     await Promise.allSettled(jobs);
+
+    if (tickers.size > 0 && successfulQuoteCount === 0) {
+      state.lastUpdateErrorAt = new Date().toISOString();
+      state.lastUpdateErrorMessage = "nenhuma fonte respondeu";
+      scheduleRecoveryRefresh();
+      return;
+    }
+
+    state.lastUpdateErrorAt = null;
+    state.lastUpdateErrorMessage = "";
+    if (state.recoveryTimer) {
+      clearTimeout(state.recoveryTimer);
+      state.recoveryTimer = null;
+    }
     saveTrailingHighs();
     state.lastUpdatedAt = new Date().toISOString();
   } finally {
@@ -2284,6 +2316,17 @@ async function updateAllData() {
     updateStatusLine();
     render();
   }
+}
+
+function scheduleRecoveryRefresh() {
+  if (state.recoveryTimer) {
+    return;
+  }
+
+  state.recoveryTimer = setTimeout(() => {
+    state.recoveryTimer = null;
+    updateAllData();
+  }, 10000);
 }
 
 function getComputedPortfolioRows() {
@@ -2491,6 +2534,7 @@ function renderPortfolioPanel(rows) {
           <td class="signal-reason-cell" title="${escapeHtml(reasonWithHint)}">${escapeHtml(reasonText)}</td>
           <td><button data-action="agent-explain-asset" data-id="${row.asset.id}">Agente</button></td>
           <td><button data-action="details-asset" data-id="${row.asset.id}">Detalhes</button></td>
+          <td><button class="primary" data-action="buy-more-asset" data-id="${row.asset.id}">Comprei mais</button></td>
           <td><button data-action="edit-asset" data-id="${row.asset.id}">Editar</button></td>
           <td><button class="danger" data-action="remove-asset" data-id="${row.asset.id}">Remover</button></td>
         </tr>
@@ -2573,12 +2617,13 @@ function renderPortfolioPanel(rows) {
             <th>Motivo</th>
             <th>Agente</th>
             <th>Detalhes</th>
+            <th>Comprei mais</th>
             <th>Editar</th>
             <th>Remover</th>
           </tr>
         </thead>
         <tbody>
-          ${rowsHtml || '<tr><td colspan="22" class="empty">Nenhum ativo cadastrado.</td></tr>'}
+          ${rowsHtml || '<tr><td colspan="23" class="empty">Nenhum ativo cadastrado.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -3774,6 +3819,46 @@ function bindEvents() {
           return;
         }
 
+        if (action === "buy-more-asset") {
+          const basePrice = state.quoteCache.get(normalizeTicker(asset.ticker))?.data?.price;
+          const qty = promptNumber(`Quantidade comprada hoje de ${asset.ticker}:`, "1");
+          if (qty === null) return;
+          if (!Number.isFinite(qty) || qty <= 0) {
+            window.alert("Quantidade invalida.");
+            return;
+          }
+
+          const price = promptNumber(
+            "Preco unitario pago hoje:",
+            Number.isFinite(basePrice) ? String(Number(basePrice).toFixed(2)) : String(toNumber(asset.avgPrice, 0))
+          );
+          if (price === null) return;
+          if (!Number.isFinite(price) || price <= 0) {
+            window.alert("Preco unitario invalido.");
+            return;
+          }
+
+          const buyQty = Math.floor(qty);
+          if (buyQty <= 0) {
+            window.alert("Use quantidade inteira maior que zero.");
+            return;
+          }
+
+          const currentQty = Math.floor(toNumber(asset.quantity, 0));
+          const currentAvg = toNumber(asset.avgPrice, 0);
+          const nextQty = currentQty + buyQty;
+          const nextAvg = ((currentQty * currentAvg) + (buyQty * price)) / nextQty;
+
+          asset.quantity = nextQty;
+          asset.avgPrice = Number(nextAvg.toFixed(4));
+          asset.updatedAt = new Date().toISOString();
+
+          savePortfolio();
+          render();
+          await updateAllData();
+          return;
+        }
+
         if (action === "remove-asset") {
           state.portfolio = state.portfolio.filter((a) => a.id !== id);
           savePortfolio();
@@ -4029,6 +4114,11 @@ function bindEvents() {
 function resetAutoRefresh() {
   if (state.refreshTimer) {
     clearInterval(state.refreshTimer);
+  }
+
+  if (state.recoveryTimer) {
+    clearTimeout(state.recoveryTimer);
+    state.recoveryTimer = null;
   }
 
   state.refreshTimer = setInterval(() => {
