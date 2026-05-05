@@ -1890,7 +1890,7 @@ async function fetchStockPrice(ticker) {
     const payload = await fetchJson(`${base}/api/market/quote/${encodeURIComponent(cleanTicker)}?fresh=1`);
     const quoteTimeRaw = payload?.quote?.regularMarketTime;
     const quoteTimestamp = quoteTimeRaw ? Date.parse(String(quoteTimeRaw)) : NaN;
-    const isStaleQuote = Number.isFinite(quoteTimestamp) && (Date.now() - quoteTimestamp) > (45 * 60 * 1000);
+    const isStaleQuote = Number.isFinite(quoteTimestamp) && (Date.now() - quoteTimestamp) > (4 * 60 * 60 * 1000);
 
     if (isStaleQuote) {
       throw new Error("cotacao backend defasada");
@@ -4288,6 +4288,16 @@ async function boot() {
     await checkApiHealth();
     updateStatusLine();
   }, 30000);
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      const elapsed = state.lastUpdatedAt ? Date.now() - new Date(state.lastUpdatedAt).getTime() : Infinity;
+      if (elapsed > 30000) {
+        updateAllData();
+        resetAutoRefresh();
+      }
+    }
+  });
 }
 
 boot();
