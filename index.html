@@ -4,10 +4,204 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>B3 Monitor - Compra/Venda</title>
+    <script>
+      (function installEarlyBrapiShield() {
+        if (window.__b3EarlyBrapiShieldInstalled) {
+          return;
+        }
+
+        window.__b3EarlyBrapiShieldInstalled = true;
+
+        function isBrapiUrl(url) {
+          var raw = String(url || '').toLowerCase();
+          return raw.indexOf('brapi.dev/api/quote/') !== -1;
+        }
+
+        function makeBlockedResponse() {
+          if (typeof Response === 'function') {
+            return new Response(JSON.stringify({ results: [], blockedBy: 'early-brapi-shield' }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+
+          return {
+            ok: true,
+            status: 200,
+            async json() {
+              return { results: [] };
+            },
+            async text() {
+              return '{"results":[]}';
+            }
+          };
+        }
+
+        if (typeof window.fetch === 'function') {
+          var originalFetch = window.fetch.bind(window);
+          window.fetch = function patchedFetch(input, init) {
+            var target = typeof input === 'string'
+              ? input
+              : (input && typeof input.url === 'string' ? input.url : '');
+
+            if (isBrapiUrl(target)) {
+              return Promise.resolve(makeBlockedResponse());
+            }
+
+            return originalFetch(input, init);
+          };
+        }
+
+        if (typeof XMLHttpRequest === 'function') {
+          var originalOpen = XMLHttpRequest.prototype.open;
+          XMLHttpRequest.prototype.open = function patchedOpen(method, url) {
+            if (isBrapiUrl(url)) {
+              this.__b3BlockedBrapi = true;
+            }
+            return originalOpen.apply(this, arguments);
+          };
+
+          var originalSend = XMLHttpRequest.prototype.send;
+          XMLHttpRequest.prototype.send = function patchedSend() {
+            if (this.__b3BlockedBrapi) {
+              try {
+                this.abort();
+              } catch {
+                // ignore
+              }
+              return;
+            }
+
+            return originalSend.apply(this, arguments);
+          };
+        }
+
+        function safeUrlForElement(url, element) {
+          if (!isBrapiUrl(url)) {
+            return null;
+          }
+
+          var tag = element && element.tagName ? String(element.tagName).toUpperCase() : '';
+          if (tag === 'LINK') {
+            return 'data:text/css,';
+          }
+
+          return 'about:blank';
+        }
+
+        function patchAttributeSetter() {
+          if (!Element || !Element.prototype || typeof Element.prototype.setAttribute !== 'function') {
+            return;
+          }
+
+          var originalSetAttribute = Element.prototype.setAttribute;
+          Element.prototype.setAttribute = function patchedSetAttribute(name, value) {
+            var attr = String(name || '').toLowerCase();
+            if (attr === 'src' || attr === 'href' || attr === 'data') {
+              var replacement = safeUrlForElement(value, this);
+              if (replacement !== null) {
+                return originalSetAttribute.call(this, name, replacement);
+              }
+            }
+
+            return originalSetAttribute.call(this, name, value);
+          };
+        }
+
+        function patchUrlProperty(proto, prop) {
+          if (!proto) {
+            return;
+          }
+
+          var desc = Object.getOwnPropertyDescriptor(proto, prop);
+          if (!desc || typeof desc.set !== 'function' || typeof desc.get !== 'function') {
+            return;
+          }
+
+          Object.defineProperty(proto, prop, {
+            configurable: true,
+            enumerable: desc.enumerable,
+            get: function getPatchedUrl() {
+              return desc.get.call(this);
+            },
+            set: function setPatchedUrl(value) {
+              var replacement = safeUrlForElement(value, this);
+              if (replacement !== null) {
+                return desc.set.call(this, replacement);
+              }
+
+              return desc.set.call(this, value);
+            }
+          });
+        }
+
+        function patchNodeInsertion() {
+          if (!Node || !Node.prototype) {
+            return;
+          }
+
+          function sanitizeElement(el) {
+            if (!el || el.nodeType !== 1) {
+              return;
+            }
+
+            var src = el.getAttribute && el.getAttribute('src');
+            var href = el.getAttribute && el.getAttribute('href');
+            var data = el.getAttribute && el.getAttribute('data');
+
+            var replacementSrc = safeUrlForElement(src, el);
+            var replacementHref = safeUrlForElement(href, el);
+            var replacementData = safeUrlForElement(data, el);
+
+            if (replacementSrc !== null && el.setAttribute) {
+              el.setAttribute('src', replacementSrc);
+            }
+
+            if (replacementHref !== null && el.setAttribute) {
+              el.setAttribute('href', replacementHref);
+            }
+
+            if (replacementData !== null && el.setAttribute) {
+              el.setAttribute('data', replacementData);
+            }
+          }
+
+          var originalAppendChild = Node.prototype.appendChild;
+          Node.prototype.appendChild = function patchedAppendChild(child) {
+            sanitizeElement(child);
+            return originalAppendChild.call(this, child);
+          };
+
+          var originalInsertBefore = Node.prototype.insertBefore;
+          Node.prototype.insertBefore = function patchedInsertBefore(newNode, referenceNode) {
+            sanitizeElement(newNode);
+            return originalInsertBefore.call(this, newNode, referenceNode);
+          };
+
+          var observer = new MutationObserver(function onMutations(records) {
+            for (var i = 0; i < records.length; i += 1) {
+              var added = records[i].addedNodes;
+              for (var j = 0; j < added.length; j += 1) {
+                sanitizeElement(added[j]);
+              }
+            }
+          });
+
+          observer.observe(document.documentElement, { childList: true, subtree: true });
+        }
+
+        patchAttributeSetter();
+        patchUrlProperty(HTMLImageElement && HTMLImageElement.prototype, 'src');
+        patchUrlProperty(HTMLScriptElement && HTMLScriptElement.prototype, 'src');
+        patchUrlProperty(HTMLIFrameElement && HTMLIFrameElement.prototype, 'src');
+        patchUrlProperty(HTMLLinkElement && HTMLLinkElement.prototype, 'href');
+        patchNodeInsertion();
+      })();
+    </script>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <div id="app"></div>
-    <script src="./app.js" defer></script>
+    <script src="./app.js?v=20260520-3" defer></script>
   </body>
 </html>

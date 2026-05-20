@@ -9,7 +9,8 @@ const STORAGE_KEYS = {
   authToken: "b3app_auth_token",
   trailingHighs: "b3app_trailing_highs",
   dismissedTickers: "b3app_dismissed_tickers",
-  notifyPromptShown: "b3app_notify_prompt_shown"
+  notifyPromptShown: "b3app_notify_prompt_shown",
+  legacyCloudAvailable: "b3app_legacy_cloud_available"
 };
 
 const SELL_SIGNAL_TYPES = {
@@ -191,6 +192,7 @@ const state = {
     autoRefreshMs: 60000,
     backendTop10Endpoint: "/api/market/top10-analysts",
     backendAnalystEndpoint: "/api/market/analyst",
+    useBrapiFallback: false,
     cloudAutoSync: true,
     notifySellTarget: true,
     opportunityMinUpsidePct: 25,
@@ -214,10 +216,14 @@ const state = {
   activeTab: "portfolio",
   refreshTimer: null,
   recoveryTimer: null,
+  recoveryDelayMs: 10000,
+  brapiDisabledUntil: 0,
   isUpdating: false,
   lastUpdatedAt: null,
   lastUpdateErrorAt: null,
   lastUpdateErrorMessage: "",
+  externalNoiseWarning: "",
+  externalNoiseDetectedAt: null,
   isApplyingCloudSnapshot: false,
   session: {
     token: null,
@@ -353,8 +359,93 @@ function clearAuthSession() {
   state.session.lastCloudSyncAt = null;
 }
 
+function setLegacyCloudAvailability(value) {
+  if (value) {
+    localStorage.setItem(STORAGE_KEYS.legacyCloudAvailable, "1");
+    return;
+  }
+
+  localStorage.removeItem(STORAGE_KEYS.legacyCloudAvailable);
+}
+
+function hasLegacyCloudAvailabilityHint() {
+  return localStorage.getItem(STORAGE_KEYS.legacyCloudAvailable) === "1";
+}
+
 function getApiBase() {
   return sanitizeApiBaseUrl(state.settings.apiBaseUrl);
+}
+
+function isAbsoluteHttpUrl(value) {
+  const raw = String(value || "").trim();
+  return raw.startsWith("http://") || raw.startsWith("https://");
+}
+
+function normalizeApiPath(path) {
+  const raw = String(path || "").trim();
+  if (!raw) {
+    return "/";
+  }
+
+  return raw.startsWith("/") ? raw : `/${raw}`;
+}
+
+function shouldUseLocalApiFallback() {
+  const host = String(window.location.hostname || "").toLowerCase();
+  const protocol = String(window.location.protocol || "").toLowerCase();
+
+  if (protocol === "file:") {
+    return true;
+  }
+
+  if (!host) {
+    return true;
+  }
+
+  if (isLocalHostname(host)) {
+    return false;
+  }
+
+  return host.includes("vscode") || host.includes("webview");
+}
+
+function getApiBaseCandidates() {
+  const configured = getApiBase();
+  const candidates = [];
+
+  if (configured) {
+    candidates.push(configured);
+  }
+
+  if (!configured && shouldUseLocalApiFallback()) {
+    candidates.push("http://localhost:3333");
+  }
+
+  if (!candidates.includes("")) {
+    candidates.push("");
+  }
+
+  return candidates;
+}
+
+async function fetchApiJson(path, options = {}) {
+  if (isAbsoluteHttpUrl(path)) {
+    return fetchJson(path, options);
+  }
+
+  const normalizedPath = normalizeApiPath(path);
+  const candidates = getApiBaseCandidates();
+  let lastError = null;
+
+  for (const base of candidates) {
+    try {
+      return await fetchJson(`${base}${normalizedPath}`, options);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error("falha ao acessar api");
 }
 
 function getCloudStatusText() {
@@ -379,6 +470,127 @@ function getApiStatusText() {
   }
 
   return "api verificando";
+}
+
+function markExternalNoise(message) {
+  const nextMessage = String(message || "").trim();
+  if (!nextMessage) {
+    return;
+  }
+
+  if (state.externalNoiseWarning === nextMessage) {
+    return;
+  }
+
+  state.externalNoiseWarning = nextMessage;
+  state.externalNoiseDetectedAt = new Date().toISOString();
+  updateStatusLine();
+}
+
+function isBrapiQuoteUrl(url) {
+  if (!url) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(String(url), window.location.origin);
+    return parsed.hostname.toLowerCase().endsWith("brapi.dev") && parsed.pathname.toLowerCase().startsWith("/api/quote/");
+  } catch {
+    return String(url).toLowerCase().includes("brapi.dev/api/quote/");
+  }
+}
+
+function createBlockedBrapiResponse() {
+  if (typeof Response === "function") {
+    return new Response(JSON.stringify({
+      results: [],
+      blockedBy: "b3app-external-noise-shield"
+    }), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json"
+      }
+    });
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    async json() {
+      return { results: [] };
+    },
+    async text() {
+      return "{\"results\":[]}";
+    }
+  };
+}
+
+function initExternalNoiseShield() {
+  if (window.__b3appNoiseShieldInstalled) {
+    return;
+  }
+
+  window.__b3appNoiseShieldInstalled = true;
+  const warning = "requisicoes ao brapi.dev detectadas no navegador (provavel extensao/script externo); o app nao usa brapi e segue normal";
+
+  if (typeof window.fetch === "function") {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = function patchedFetch(input, init) {
+      const target = typeof input === "string"
+        ? input
+        : (typeof input?.url === "string" ? input.url : "");
+
+      if (isBrapiQuoteUrl(target)) {
+        markExternalNoise(warning);
+        return Promise.resolve(createBlockedBrapiResponse());
+      }
+
+      return originalFetch(input, init);
+    };
+  }
+}
+
+function initExternalNoiseMonitor() {
+  const BRAPI_HINT = "brapi.dev/api/quote";
+  const warning = "requisicoes ao brapi.dev detectadas no navegador (provavel extensao/script externo); o app nao usa brapi e segue normal";
+
+  function inspectResourceUrl(url) {
+    const raw = String(url || "").toLowerCase();
+    if (raw.includes(BRAPI_HINT)) {
+      markExternalNoise(warning);
+    }
+  }
+
+  window.addEventListener("error", (event) => {
+    const target = event?.target;
+    const src = target && typeof target.src === "string" ? target.src : "";
+    if (src) {
+      inspectResourceUrl(src);
+    }
+
+    const message = String(event?.message || "");
+    inspectResourceUrl(message);
+  }, true);
+
+  window.addEventListener("unhandledrejection", (event) => {
+    const reasonText = String(event?.reason?.message || event?.reason || "");
+    inspectResourceUrl(reasonText);
+  });
+
+  // DevTools can show extension-origin requests not controlled by this app; inspect resource timing entries.
+  const checker = setInterval(() => {
+    try {
+      const resources = performance.getEntriesByType("resource");
+      for (const entry of resources) {
+        inspectResourceUrl(entry?.name || "");
+      }
+    } catch {
+      // ignore timing API issues
+    }
+  }, 5000);
+
+  setTimeout(() => clearInterval(checker), 120000);
 }
 
 function buildLegacyCloudPayload() {
@@ -440,7 +652,7 @@ async function authJson(path, options = {}) {
     headers.Authorization = `Bearer ${state.session.token}`;
   }
 
-  return fetchJson(`${getApiBase()}${path}`, {
+  return fetchApiJson(path, {
     ...options,
     headers,
   });
@@ -501,14 +713,23 @@ async function loadLegacyCloudData() {
     return false;
   }
 
+  // Probe legacy cloud only when we already detected legacy data for this account.
+  const shouldProbeLegacyCloud = hasLegacyCloudAvailabilityHint();
+  if (!shouldProbeLegacyCloud) {
+    state.session.cloudStatus = "sem backup";
+    return false;
+  }
+
   try {
     const payload = await authJson("/api/legacy-cloud/data", { method: "GET" });
     applyLegacyCloudPayload(payload.data);
+    setLegacyCloudAvailability(true);
     state.session.cloudStatus = "sincronizada";
     state.session.lastCloudSyncAt = payload.updatedAt || new Date().toISOString();
     return true;
   } catch (error) {
     if (String(error?.message || "").includes("404")) {
+      setLegacyCloudAvailability(false);
       state.session.cloudStatus = "sem backup";
       return false;
     }
@@ -536,6 +757,7 @@ async function syncLegacyCloudData(showMessage = false) {
       },
       body: JSON.stringify({ data: buildLegacyCloudPayload() })
     });
+    setLegacyCloudAvailability(true);
     state.session.cloudStatus = "sincronizada";
     state.session.lastCloudSyncAt = payload.updatedAt || new Date().toISOString();
     render();
@@ -709,7 +931,10 @@ function calculateRSI(data, period = 14) {
 
 function calculatePnL(asset, currentPrice) {
   const invested = toNumber(asset.quantity) * toNumber(asset.avgPrice);
-  const current = toNumber(asset.quantity) * toNumber(currentPrice);
+  const safeCurrentPrice = Number.isFinite(currentPrice) && currentPrice > 0
+    ? currentPrice
+    : toNumber(asset.avgPrice, 0);
+  const current = toNumber(asset.quantity) * safeCurrentPrice;
   const pnl = current - invested;
   const pnlPct = invested > 0 ? (pnl / invested) * 100 : 0;
   return { invested, current, pnl, pnlPct };
@@ -1626,6 +1851,11 @@ function renderDecisionAgent(rows) {
 }
 
 async function fetchJson(url, options = {}) {
+  const targetUrl = String(url || "");
+  if (targetUrl.includes("brapi.dev")) {
+    throw new Error("fonte brapi desativada");
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 9000);
 
@@ -1661,7 +1891,7 @@ async function fetchJson(url, options = {}) {
 
 async function checkApiHealth() {
   try {
-    const payload = await fetchJson(`${getApiBase()}/api/health`);
+    const payload = await fetchApiJson("/api/health");
     state.apiHealth.status = payload?.status === "ok" ? "ok" : "error";
     state.apiHealth.message = payload?.status === "ok" ? "" : "resposta invalida";
   } catch (error) {
@@ -1685,9 +1915,8 @@ async function searchMarket(query) {
     return hit.data;
   }
 
-  const base = getApiBase();
   try {
-    const payload = await fetchJson(`${base}/api/market/search?q=${encodeURIComponent(term)}`);
+    const payload = await fetchApiJson(`/api/market/search?q=${encodeURIComponent(term)}`);
     const results = Array.isArray(payload?.results) ? payload.results : [];
     const normalized = results
       .map((item) => ({
@@ -1883,27 +2112,33 @@ async function fetchStockPrice(ticker) {
   if (cache && Date.now() - cache.fetchedAt < 20000) {
     return cache.data;
   }
-
-  const base = getApiBase();
+  const staleCacheData = cache?.data;
+  let staleBackendData = null;
 
   try {
-    const payload = await fetchJson(`${base}/api/market/quote/${encodeURIComponent(cleanTicker)}?fresh=1`);
+    const payload = await fetchApiJson(`/api/market/quote/${encodeURIComponent(cleanTicker)}`);
     const quoteTimeRaw = payload?.quote?.regularMarketTime;
     const quoteTimestamp = quoteTimeRaw ? Date.parse(String(quoteTimeRaw)) : NaN;
     const isStaleQuote = Number.isFinite(quoteTimestamp) && (Date.now() - quoteTimestamp) > (4 * 60 * 60 * 1000);
-
-    if (isStaleQuote) {
-      throw new Error("cotacao backend defasada");
-    }
 
     const data = {
       ticker: cleanTicker,
       name: payload?.quote?.name || cleanTicker,
       price: toNumber(payload?.quote?.regularMarketPrice, NaN),
       variationPct: toNumber(payload?.quote?.regularMarketChangePercent, 0),
-      source: "backend",
+      source: isStaleQuote ? "backend-stale" : "backend",
       quoteTime: quoteTimeRaw || null
     };
+
+    if (!Number.isFinite(data.price) || data.price <= 0) {
+      throw new Error("cotacao backend invalida");
+    }
+
+    if (isStaleQuote) {
+      staleBackendData = data;
+      throw new Error("cotacao backend defasada");
+    }
+
     state.quoteCache.set(cleanTicker, { data, fetchedAt: Date.now() });
     return data;
   } catch {
@@ -1911,21 +2146,50 @@ async function fetchStockPrice(ticker) {
   }
 
   try {
-    const payload = await fetchJson(`https://brapi.dev/api/quote/${encodeURIComponent(cleanTicker)}`);
-    const item = Array.isArray(payload?.results) ? payload.results[0] : null;
-    if (!item) throw new Error("sem cotacao");
+    const yahooSymbol = toYahooTicker(cleanTicker);
+    const chart = await fetchJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1d&interval=1m`);
+    const result = chart?.chart?.result?.[0] || {};
+    const quote = result?.meta || {};
+    const closes = Array.isArray(result?.indicators?.quote?.[0]?.close)
+      ? result.indicators.quote[0].close
+      : [];
+    const lastClose = closes.length > 0
+      ? toNumber(closes[closes.length - 1], NaN)
+      : NaN;
+    const fallbackPrice = Number.isFinite(toNumber(quote?.regularMarketPrice, NaN)) && toNumber(quote?.regularMarketPrice, 0) > 0
+      ? toNumber(quote?.regularMarketPrice, NaN)
+      : Number.isFinite(toNumber(quote?.previousClose, NaN)) && toNumber(quote?.previousClose, 0) > 0
+        ? toNumber(quote?.previousClose, NaN)
+        : lastClose;
 
     const data = {
       ticker: cleanTicker,
-      name: item.longName || item.shortName || cleanTicker,
-      price: toNumber(item.regularMarketPrice, NaN),
-      variationPct: toNumber(item.regularMarketChangePercent, 0),
-      source: "brapi",
-      quoteTime: item.regularMarketTime || null
+      name: quote?.longName || quote?.shortName || cleanTicker,
+      price: fallbackPrice,
+      variationPct: toNumber(quote?.regularMarketChangePercent, 0),
+      source: "yahoo-chart",
+      quoteTime: quote?.regularMarketTime ? new Date(Number(quote.regularMarketTime) * 1000).toISOString() : null
     };
+
+    if (!Number.isFinite(data.price) || data.price <= 0) {
+      throw new Error("cotacao yahoo indisponivel");
+    }
+
     state.quoteCache.set(cleanTicker, { data, fetchedAt: Date.now() });
     return data;
   } catch {
+    if (staleBackendData && Number.isFinite(toNumber(staleBackendData.price, NaN)) && toNumber(staleBackendData.price, 0) > 0) {
+      state.quoteCache.set(cleanTicker, { data: staleBackendData, fetchedAt: Date.now() });
+      return staleBackendData;
+    }
+
+    if (staleCacheData && Number.isFinite(toNumber(staleCacheData.price, NaN))) {
+      return {
+        ...staleCacheData,
+        source: `${staleCacheData.source || "cache"}-stale`
+      };
+    }
+
     return {
       ticker: cleanTicker,
       name: cleanTicker,
@@ -1936,6 +2200,41 @@ async function fetchStockPrice(ticker) {
   }
 }
 
+async function prefetchQuotesBatch(tickers) {
+  const normalized = [...new Set((Array.isArray(tickers) ? tickers : []).map((ticker) => normalizeTicker(ticker)).filter(Boolean))];
+
+  if (normalized.length === 0) {
+    return;
+  }
+
+  try {
+    const payload = await fetchApiJson(`/api/market/quotes?tickers=${encodeURIComponent(normalized.join(","))}`);
+    const quotes = Array.isArray(payload?.quotes) ? payload.quotes : [];
+
+    for (const quote of quotes) {
+      const cleanTicker = normalizeTicker(quote?.ticker);
+      const price = toNumber(quote?.regularMarketPrice, NaN);
+
+      if (!cleanTicker || !Number.isFinite(price) || price <= 0) {
+        continue;
+      }
+
+      const data = {
+        ticker: cleanTicker,
+        name: quote?.name || cleanTicker,
+        price,
+        variationPct: toNumber(quote?.regularMarketChangePercent, 0),
+        source: "backend-batch",
+        quoteTime: quote?.regularMarketTime || null
+      };
+
+      state.quoteCache.set(cleanTicker, { data, fetchedAt: Date.now() });
+    }
+  } catch {
+    // keep per-ticker fallback flow when batch endpoint is unavailable
+  }
+}
+
 async function fetchHistoricalData(ticker) {
   const cleanTicker = normalizeTicker(ticker);
   const cache = state.historicalCache.get(cleanTicker);
@@ -1943,10 +2242,8 @@ async function fetchHistoricalData(ticker) {
     return cache.data;
   }
 
-  const base = getApiBase();
-
   try {
-    const backend = await fetchJson(`${base}/api/market/history/${encodeURIComponent(cleanTicker)}?range=6mo&interval=1d`);
+    const backend = await fetchApiJson(`/api/market/history/${encodeURIComponent(cleanTicker)}?range=6mo&interval=1d`);
     const prices = Array.isArray(backend?.prices) ? backend.prices : [];
     state.historicalCache.set(cleanTicker, { data: prices, fetchedAt: Date.now() });
     return prices;
@@ -1985,11 +2282,12 @@ async function fetchAnalystData(ticker) {
     return cache.data;
   }
 
-  const base = getApiBase();
-
   try {
-    const endpoint = `${base}${state.settings.backendAnalystEndpoint}/${encodeURIComponent(cleanTicker)}`;
-    const payload = await fetchJson(endpoint);
+    const analystBase = String(state.settings.backendAnalystEndpoint || "/api/market/analyst").trim();
+    const endpoint = isAbsoluteHttpUrl(analystBase)
+      ? `${analystBase.replace(/\/$/, "")}/${encodeURIComponent(cleanTicker)}`
+      : `${normalizeApiPath(analystBase)}/${encodeURIComponent(cleanTicker)}`;
+    const payload = await fetchApiJson(endpoint);
     const data = {
       ticker: cleanTicker,
       targetMean: toNumber(payload?.targetMean, NaN),
@@ -2063,11 +2361,12 @@ async function fetchAnalystData(ticker) {
 }
 
 async function fetchTop10Analysts() {
-  const base = getApiBase();
-
   try {
-    const endpoint = `${base}${state.settings.backendTop10Endpoint}`;
-    const payload = await fetchJson(endpoint);
+    const top10Base = String(state.settings.backendTop10Endpoint || "/api/market/top10-analysts").trim();
+    const endpoint = isAbsoluteHttpUrl(top10Base)
+      ? top10Base
+      : normalizeApiPath(top10Base);
+    const payload = await fetchApiJson(endpoint);
     const list = Array.isArray(payload?.items) ? payload.items.slice(0, 10) : [];
 
     state.top10 = list.map((item, index) => ({
@@ -2280,9 +2579,10 @@ function updateStatusLine() {
   const line = document.getElementById("statusLine");
   if (!line) return;
   const apiStatus = getApiStatusText();
+  const externalWarning = state.externalNoiseWarning ? ` | aviso: ${state.externalNoiseWarning}` : "";
 
   if (state.isUpdating) {
-    line.textContent = `Atualizando dados de mercado... | ${apiStatus} | ${getCloudStatusText()}`;
+    line.textContent = `Atualizando dados de mercado... | ${apiStatus} | ${getCloudStatusText()}${externalWarning}`;
     return;
   }
 
@@ -2291,16 +2591,61 @@ function updateStatusLine() {
       ? ` | ultima valida: ${fmtDate(state.lastUpdatedAt)}`
       : "";
     const reason = state.lastUpdateErrorMessage ? ` (${state.lastUpdateErrorMessage})` : "";
-    line.textContent = `Falha de conexao ao atualizar cotacoes${reason} | tentando reconectar${lastOk} | ${apiStatus} | ${getCloudStatusText()}`;
+    line.textContent = `Falha de conexao ao atualizar cotacoes${reason} | tentando reconectar${lastOk} | ${apiStatus} | ${getCloudStatusText()}${externalWarning}`;
     return;
   }
 
   if (!state.lastUpdatedAt) {
-    line.textContent = `Aguardando primeira atualizacao | ${apiStatus} | ${getCloudStatusText()}`;
+    line.textContent = `Aguardando primeira atualizacao | ${apiStatus} | ${getCloudStatusText()}${externalWarning}`;
     return;
   }
 
-  line.textContent = `Ultima atualizacao: ${fmtDate(state.lastUpdatedAt)} | refresh ${Math.round(state.settings.autoRefreshMs / 1000)}s | ${apiStatus} | ${getCloudStatusText()}`;
+  line.textContent = `Ultima atualizacao: ${fmtDate(state.lastUpdatedAt)} | refresh ${Math.round(state.settings.autoRefreshMs / 1000)}s | ${apiStatus} | ${getCloudStatusText()}${externalWarning}`;
+}
+
+function hasValidQuoteInCache(ticker) {
+  const cleanTicker = normalizeTicker(ticker);
+  const cachedPrice = toNumber(state.quoteCache.get(cleanTicker)?.data?.price, NaN);
+  return Number.isFinite(cachedPrice) && cachedPrice > 0;
+}
+
+async function runTasksWithConcurrency(tasks, limit = 4) {
+  const queue = Array.isArray(tasks) ? tasks.slice() : [];
+  const safeLimit = Math.max(1, Math.min(10, toNumber(limit, 4)));
+
+  async function worker() {
+    while (queue.length > 0) {
+      const task = queue.shift();
+      if (typeof task !== "function") {
+        continue;
+      }
+
+      try {
+        await task();
+      } catch {
+        // task level failures are already handled internally
+      }
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(safeLimit, queue.length || 1) }, () => worker());
+  await Promise.all(workers);
+}
+
+async function forceRefreshMarketData() {
+  state.quoteCache.clear();
+  state.historicalCache.clear();
+  state.analystCache.clear();
+  state.lastUpdateErrorAt = null;
+  state.lastUpdateErrorMessage = "";
+
+  if (state.isUpdating) {
+    state.lastUpdateErrorMessage = "atualizacao em andamento";
+    updateStatusLine();
+    return;
+  }
+
+  await updateAllData();
 }
 
 async function updateAllData() {
@@ -2318,17 +2663,86 @@ async function updateAllData() {
     for (const t of state.top10) tickers.add(normalizeTicker(t.ticker));
     for (const al of state.alerts) tickers.add(normalizeTicker(al.ticker));
 
-    let successfulQuoteCount = 0;
+    await prefetchQuotesBatch([...tickers]);
 
-    const jobs = [...tickers].filter(Boolean).map(async (ticker) => {
-      const [quote, historical, analyst] = await Promise.all([
+    let successfulQuoteCount = 0;
+    let staleQuoteCount = 0;
+    let failedQuoteCount = 0;
+
+    const tasks = [...tickers].filter(Boolean).map((ticker) => async () => {
+      const [quoteResult, historicalResult, analystResult] = await Promise.allSettled([
         fetchStockPrice(ticker),
         fetchHistoricalData(ticker),
         fetchAnalystData(ticker)
       ]);
 
-      if (Number.isFinite(toNumber(quote?.price, NaN))) {
+      let quote = quoteResult.status === "fulfilled"
+        ? quoteResult.value
+        : {
+            ticker,
+            name: ticker,
+            price: NaN,
+            variationPct: 0,
+            source: "unavailable"
+          };
+      const historical = historicalResult.status === "fulfilled" && Array.isArray(historicalResult.value)
+        ? historicalResult.value
+        : [];
+      const analyst = analystResult.status === "fulfilled" && analystResult.value
+        ? analystResult.value
+        : {
+            ticker,
+            targetMean: NaN,
+            targetMin: NaN,
+            targetMax: NaN,
+            recommendation: state.settings.localModeAnalystMessage,
+            analystsCount: 0,
+            available: false,
+            source: "unavailable"
+          };
+      const inPortfolio = state.portfolio.find((item) => normalizeTicker(item.ticker) === ticker);
+
+      if (!Number.isFinite(toNumber(quote?.price, NaN)) || toNumber(quote?.price, 0) <= 0) {
+        const latestHistorical = historical.length > 0 ? historical[historical.length - 1] : null;
+        const historicalClose = toNumber(latestHistorical?.close, NaN);
+
+        if (Number.isFinite(historicalClose) && historicalClose > 0) {
+          quote = {
+            ticker: normalizeTicker(ticker),
+            name: quote?.name || normalizeTicker(ticker),
+            price: historicalClose,
+            variationPct: toNumber(quote?.variationPct, 0),
+            source: "historical-fallback",
+            quoteTime: latestHistorical?.date || null
+          };
+          state.quoteCache.set(normalizeTicker(ticker), { data: quote, fetchedAt: Date.now() });
+        }
+      }
+
+      if ((!Number.isFinite(toNumber(quote?.price, NaN)) || toNumber(quote?.price, 0) <= 0) && inPortfolio) {
+        const avgPrice = toNumber(inPortfolio.avgPrice, NaN);
+
+        if (Number.isFinite(avgPrice) && avgPrice > 0) {
+          quote = {
+            ticker: normalizeTicker(ticker),
+            name: inPortfolio.name || normalizeTicker(ticker),
+            price: avgPrice,
+            variationPct: 0,
+            source: "portfolio-avg",
+            quoteTime: new Date().toISOString()
+          };
+
+          state.quoteCache.set(normalizeTicker(ticker), { data: quote, fetchedAt: Date.now() });
+        }
+      }
+
+      if (Number.isFinite(toNumber(quote?.price, NaN)) && toNumber(quote?.price, 0) > 0) {
         successfulQuoteCount += 1;
+        if (String(quote?.source || "").includes("stale")) {
+          staleQuoteCount += 1;
+        }
+      } else {
+        failedQuoteCount += 1;
       }
 
       const sma50 = calculateSMA(historical, 50);
@@ -2346,7 +2760,6 @@ async function updateAllData() {
         ? historical.slice(-10).reduce((acc, item) => acc + toNumber(item.volume, 0), 0) / 10
         : 0;
 
-      const inPortfolio = state.portfolio.find((item) => normalizeTicker(item.ticker) === ticker);
       if (inPortfolio) {
         const opportunitySignal = getAnalystOpportunitySignal(ticker, quote, analyst);
         if (opportunitySignal) {
@@ -2385,23 +2798,48 @@ async function updateAllData() {
       }
     });
 
-    await Promise.allSettled(jobs);
+    await runTasksWithConcurrency(tasks, 4);
 
-    if (tickers.size > 0 && successfulQuoteCount === 0) {
+    const totalTickers = [...tickers].filter(Boolean).length;
+    const hasAnyTrackedCache = [...tickers].some((ticker) => hasValidQuoteInCache(ticker));
+
+    if (totalTickers > 0 && successfulQuoteCount === 0 && !hasAnyTrackedCache) {
       state.lastUpdateErrorAt = new Date().toISOString();
-      state.lastUpdateErrorMessage = "nenhuma fonte respondeu";
+      state.lastUpdateErrorMessage = `nenhuma fonte respondeu (0/${totalTickers})`;
       scheduleRecoveryRefresh();
       return;
     }
 
-    state.lastUpdateErrorAt = null;
-    state.lastUpdateErrorMessage = "";
+    if (totalTickers > 0 && successfulQuoteCount === 0 && hasAnyTrackedCache) {
+      state.lastUpdateErrorAt = null;
+      state.lastUpdateErrorMessage = "";
+      if (!state.lastUpdatedAt) {
+        state.lastUpdatedAt = new Date().toISOString();
+      }
+      scheduleRecoveryRefresh();
+      return;
+    }
+
+    if (totalTickers > 0 && failedQuoteCount > 0 && successfulQuoteCount > 0) {
+      const staleHint = staleQuoteCount > 0 ? `, ${staleQuoteCount} em cache` : "";
+      state.lastUpdateErrorAt = null;
+      state.lastUpdateErrorMessage = `parcial (${failedQuoteCount}/${totalTickers} sem resposta${staleHint})`;
+    } else {
+      state.lastUpdateErrorAt = null;
+      state.lastUpdateErrorMessage = "";
+    }
+
     if (state.recoveryTimer) {
       clearTimeout(state.recoveryTimer);
       state.recoveryTimer = null;
     }
+    state.recoveryDelayMs = 10000;
     saveTrailingHighs();
     state.lastUpdatedAt = new Date().toISOString();
+  } catch (error) {
+    state.lastUpdateErrorAt = new Date().toISOString();
+    state.lastUpdateErrorMessage = error && error.message ? String(error.message) : "erro inesperado";
+    scheduleRecoveryRefresh();
   } finally {
     state.isUpdating = false;
     updateStatusLine();
@@ -2414,10 +2852,13 @@ function scheduleRecoveryRefresh() {
     return;
   }
 
+  const delayMs = Math.max(10000, Math.min(60000, toNumber(state.recoveryDelayMs, 10000)));
+  state.recoveryDelayMs = Math.min(60000, Math.round(delayMs * 1.5));
+
   state.recoveryTimer = setTimeout(() => {
     state.recoveryTimer = null;
     updateAllData();
-  }, 10000);
+  }, delayMs);
 }
 
 function getComputedPortfolioRows() {
@@ -2432,7 +2873,26 @@ function getComputedPortfolioRows() {
       analystsCount: 0
     };
 
-    const currentPrice = toNumber(quote.price, NaN);
+    const rawCurrentPrice = toNumber(quote.price, NaN);
+    const latestHistoricalClose = historical.length
+      ? toNumber(historical[historical.length - 1].close, NaN)
+      : NaN;
+    const avgPriceFallback = toNumber(asset.avgPrice, NaN);
+
+    let currentPrice = NaN;
+    let priceSource = "unavailable";
+
+    if (Number.isFinite(rawCurrentPrice) && rawCurrentPrice > 0) {
+      currentPrice = rawCurrentPrice;
+      priceSource = "live";
+    } else if (Number.isFinite(latestHistoricalClose) && latestHistoricalClose > 0) {
+      currentPrice = latestHistoricalClose;
+      priceSource = "historical";
+    } else if (Number.isFinite(avgPriceFallback) && avgPriceFallback > 0) {
+      currentPrice = avgPriceFallback;
+      priceSource = "avg-price";
+    }
+
     const pnl = calculatePnL(asset, currentPrice);
     const sma50 = calculateSMA(historical, 50);
     const rsi = calculateRSI(historical, 14);
@@ -2506,6 +2966,7 @@ function getComputedPortfolioRows() {
       quote,
       analyst,
       currentPrice,
+      priceSource,
       investedValue: pnl.invested,
       currentValue: pnl.current,
       pnlValue: pnl.pnl,
@@ -2608,6 +3069,16 @@ function renderPortfolioPanel(rows) {
       const technicalSellClass = Number.isFinite(row.currentPrice) && Number.isFinite(row.technicalSellPrice)
         ? (row.currentPrice >= row.technicalSellPrice ? "warn-text" : "")
         : "";
+      const currentPriceDisplay = row.priceSource === "historical"
+        ? `~${fmtCurrency(row.currentPrice)}`
+        : row.priceSource === "avg-price"
+          ? `${fmtCurrency(row.currentPrice)}*`
+          : fmtCurrency(row.currentPrice);
+      const currentPriceTitle = row.priceSource === "historical"
+        ? "Estimado pelo ultimo fechamento historico"
+        : row.priceSource === "avg-price"
+          ? "Estimado pelo preco medio cadastrado"
+          : "Cotacao ao vivo";
 
       return `
         <tr class="portfolio-row tone-${tone}">
@@ -2615,7 +3086,7 @@ function renderPortfolioPanel(rows) {
           <td>${escapeHtml(row.asset.name || row.quote.name || ticker)}</td>
           <td>${fmtNumber(toNumber(row.asset.quantity), 0)}</td>
           <td>${fmtCurrency(toNumber(row.asset.avgPrice))}</td>
-          <td class="${currentPriceClass}">${fmtCurrency(row.currentPrice)}</td>
+          <td class="${currentPriceClass}" title="${currentPriceTitle}">${currentPriceDisplay}</td>
           <td>${fmtCurrency(row.investedValue)}</td>
           <td>${fmtCurrency(row.currentValue)}</td>
           <td class="${row.pnlValue >= 0 ? "positive" : "negative"}">${fmtCurrency(row.pnlValue)}</td>
@@ -2687,6 +3158,7 @@ function renderPortfolioPanel(rows) {
         <button class="primary" type="submit">Salvar ativo</button>
         <button type="button" id="btnPortfolioClear">Limpar</button>
         <button type="button" id="btnUpdateNow">Atualizar agora</button>
+        <button type="button" id="btnRefreshQuotesNow">Recarregar cotacoes</button>
       </div>
     </form>
 
@@ -3608,6 +4080,11 @@ function bindEvents() {
     btnUpdateNow.onclick = () => updateAllData();
   }
 
+  const btnRefreshQuotesNow = document.getElementById("btnRefreshQuotesNow");
+  if (btnRefreshQuotesNow) {
+    btnRefreshQuotesNow.onclick = () => forceRefreshMarketData();
+  }
+
   const watchlistForm = document.getElementById("watchlistForm");
   if (watchlistForm) {
     attachStockAutocomplete(watchlistForm, {
@@ -4245,6 +4722,7 @@ function resetAutoRefresh() {
 }
 
 async function boot() {
+  initExternalNoiseShield();
   loadPortfolio();
   loadSalesHistory();
   loadWatchlist();
@@ -4256,6 +4734,7 @@ async function boot() {
   syncPortfolioAlerts();
 
   createAppLayout();
+  initExternalNoiseMonitor();
   render();
   await checkApiHealth();
   updateStatusLine();

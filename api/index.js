@@ -363,18 +363,72 @@ async function getQuotesByTickers(tickers, options = {}) {
   let freshQuotes = []
 
   if (missing.length) {
-    const symbols = missing.map(toYahooSymbol)
-    const results = await yahooFinance.quote(symbols)
-    const list = Array.isArray(results) ? results : [results]
+    async function fetchQuoteViaChartFallback(ticker) {
+      try {
+        const symbol = toYahooSymbol(ticker)
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1m`
+        const payload = await fetchJsonWithTimeout(url)
+        const result = payload?.chart?.result?.[0]
+        const meta = result?.meta ?? {}
+        const closes = Array.isArray(result?.indicators?.quote?.[0]?.close)
+          ? result.indicators.quote[0].close
+          : []
+        const lastClose = closes.length > 0
+          ? Number(closes[closes.length - 1] ?? NaN)
+          : NaN
+        const marketPrice = Number.isFinite(Number(meta?.regularMarketPrice)) && Number(meta?.regularMarketPrice) > 0
+          ? Number(meta.regularMarketPrice)
+          : Number.isFinite(Number(meta?.previousClose)) && Number(meta?.previousClose) > 0
+            ? Number(meta.previousClose)
+            : lastClose
 
-    freshQuotes = list.map((item) => ({
-      ticker: fromYahooSymbol(item.symbol),
-      name: item.longName ?? item.shortName ?? fromYahooSymbol(item.symbol),
-      currency: item.currency ?? 'BRL',
-      regularMarketPrice: Number(item.regularMarketPrice ?? 0),
-      regularMarketChangePercent: Number(item.regularMarketChangePercent ?? 0),
-      regularMarketTime: item.regularMarketTime ? item.regularMarketTime.toISOString() : null,
-    }))
+        if (!Number.isFinite(marketPrice) || marketPrice <= 0) {
+          return null
+        }
+
+        return {
+          ticker,
+          name: String(meta?.longName ?? meta?.shortName ?? ticker),
+          currency: String(meta?.currency ?? 'BRL'),
+          regularMarketPrice: marketPrice,
+          regularMarketChangePercent: Number(meta?.regularMarketChangePercent ?? 0),
+          regularMarketTime: Number.isFinite(Number(meta?.regularMarketTime))
+            ? new Date(Number(meta.regularMarketTime) * 1000).toISOString()
+            : null,
+        }
+      } catch {
+        return null
+      }
+    }
+
+    try {
+      const symbols = missing.map(toYahooSymbol)
+      const results = await yahooFinance.quote(symbols)
+      const list = Array.isArray(results) ? results : [results]
+
+      const rawQuotes = list.map((item) => ({
+        ticker: fromYahooSymbol(item.symbol),
+        name: item.longName ?? item.shortName ?? fromYahooSymbol(item.symbol),
+        currency: item.currency ?? 'BRL',
+        regularMarketPrice: Number(item.regularMarketPrice ?? NaN),
+        regularMarketChangePercent: Number(item.regularMarketChangePercent ?? 0),
+        regularMarketTime: item.regularMarketTime ? item.regularMarketTime.toISOString() : null,
+      }))
+
+      const validQuotes = rawQuotes.filter((quote) => Number.isFinite(quote.regularMarketPrice) && quote.regularMarketPrice > 0)
+      const validTickers = new Set(validQuotes.map((quote) => quote.ticker))
+      const invalidTickers = missing.filter((ticker) => !validTickers.has(ticker))
+
+      if (invalidTickers.length > 0) {
+        const recovered = await Promise.all(invalidTickers.map((ticker) => fetchQuoteViaChartFallback(ticker)))
+        freshQuotes = [...validQuotes, ...recovered.filter(Boolean)]
+      } else {
+        freshQuotes = validQuotes
+      }
+    } catch {
+      const fallbackQuotes = await Promise.all(missing.map((ticker) => fetchQuoteViaChartFallback(ticker)))
+      freshQuotes = fallbackQuotes.filter(Boolean)
+    }
 
     for (const quote of freshQuotes) {
       setCacheValue(quoteCache, quote.ticker, quote, QUOTE_CACHE_TTL_MS)
@@ -792,6 +846,25 @@ export default async function handler(req, res) {
       }
 
       sendJson(res, 200, { quote: quotes[0] })
+      return
+    }
+
+    if (pathname === '/api/market/quotes') {
+      const rawTickers = String(url.searchParams.get('tickers') ?? '')
+      const tickers = rawTickers
+        .split(',')
+        .map((value) => normalizeTicker(value))
+        .filter(Boolean)
+
+      if (!tickers.length) {
+        sendJson(res, 400, { error: 'Parametro tickers invalido.' })
+        return
+      }
+
+      const forceFresh = String(url.searchParams.get('fresh') ?? '').toLowerCase()
+      const bypassCache = forceFresh === '1' || forceFresh === 'true' || forceFresh === 'yes'
+      const quotes = await getQuotesByTickers(tickers, { bypassCache })
+      sendJson(res, 200, { quotes })
       return
     }
 
