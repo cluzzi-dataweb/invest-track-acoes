@@ -417,7 +417,7 @@ function getApiBaseCandidates() {
     candidates.push(configured);
   }
 
-  if (!configured && shouldUseLocalApiFallback()) {
+  if (shouldUseLocalApiFallback() && !candidates.includes("http://localhost:3333")) {
     candidates.push("http://localhost:3333");
   }
 
@@ -701,8 +701,13 @@ async function restoreCloudSession() {
     state.session.user = payload.user;
     state.session.cloudStatus = "conectada";
     return true;
-  } catch {
-    clearAuthSession();
+  } catch (error) {
+    const is401 = String(error?.message || "").startsWith("401");
+    if (is401) {
+      clearAuthSession();
+    } else {
+      state.session.cloudStatus = "local";
+    }
     return false;
   }
 }
@@ -2113,7 +2118,6 @@ async function fetchStockPrice(ticker) {
     return cache.data;
   }
   const staleCacheData = cache?.data;
-  let staleBackendData = null;
 
   try {
     const payload = await fetchApiJson(`/api/market/quote/${encodeURIComponent(cleanTicker)}`);
@@ -2134,70 +2138,26 @@ async function fetchStockPrice(ticker) {
       throw new Error("cotacao backend invalida");
     }
 
-    if (isStaleQuote) {
-      staleBackendData = data;
-      throw new Error("cotacao backend defasada");
-    }
-
     state.quoteCache.set(cleanTicker, { data, fetchedAt: Date.now() });
     return data;
   } catch {
     // fallback below
   }
 
-  try {
-    const yahooSymbol = toYahooTicker(cleanTicker);
-    const chart = await fetchJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1d&interval=1m`);
-    const result = chart?.chart?.result?.[0] || {};
-    const quote = result?.meta || {};
-    const closes = Array.isArray(result?.indicators?.quote?.[0]?.close)
-      ? result.indicators.quote[0].close
-      : [];
-    const lastClose = closes.length > 0
-      ? toNumber(closes[closes.length - 1], NaN)
-      : NaN;
-    const fallbackPrice = Number.isFinite(toNumber(quote?.regularMarketPrice, NaN)) && toNumber(quote?.regularMarketPrice, 0) > 0
-      ? toNumber(quote?.regularMarketPrice, NaN)
-      : Number.isFinite(toNumber(quote?.previousClose, NaN)) && toNumber(quote?.previousClose, 0) > 0
-        ? toNumber(quote?.previousClose, NaN)
-        : lastClose;
-
-    const data = {
-      ticker: cleanTicker,
-      name: quote?.longName || quote?.shortName || cleanTicker,
-      price: fallbackPrice,
-      variationPct: toNumber(quote?.regularMarketChangePercent, 0),
-      source: "yahoo-chart",
-      quoteTime: quote?.regularMarketTime ? new Date(Number(quote.regularMarketTime) * 1000).toISOString() : null
-    };
-
-    if (!Number.isFinite(data.price) || data.price <= 0) {
-      throw new Error("cotacao yahoo indisponivel");
-    }
-
-    state.quoteCache.set(cleanTicker, { data, fetchedAt: Date.now() });
-    return data;
-  } catch {
-    if (staleBackendData && Number.isFinite(toNumber(staleBackendData.price, NaN)) && toNumber(staleBackendData.price, 0) > 0) {
-      state.quoteCache.set(cleanTicker, { data: staleBackendData, fetchedAt: Date.now() });
-      return staleBackendData;
-    }
-
-    if (staleCacheData && Number.isFinite(toNumber(staleCacheData.price, NaN))) {
-      return {
-        ...staleCacheData,
-        source: `${staleCacheData.source || "cache"}-stale`
-      };
-    }
-
+  if (staleCacheData && Number.isFinite(toNumber(staleCacheData.price, NaN)) && toNumber(staleCacheData.price, 0) > 0) {
     return {
-      ticker: cleanTicker,
-      name: cleanTicker,
-      price: NaN,
-      variationPct: 0,
-      source: "unavailable"
+      ...staleCacheData,
+      source: `${staleCacheData.source || "cache"}-stale`
     };
   }
+
+  return {
+    ticker: cleanTicker,
+    name: cleanTicker,
+    price: NaN,
+    variationPct: 0,
+    source: "unavailable"
+  };
 }
 
 async function prefetchQuotesBatch(tickers) {
@@ -2813,9 +2773,7 @@ async function updateAllData() {
     if (totalTickers > 0 && successfulQuoteCount === 0 && hasAnyTrackedCache) {
       state.lastUpdateErrorAt = null;
       state.lastUpdateErrorMessage = "";
-      if (!state.lastUpdatedAt) {
-        state.lastUpdatedAt = new Date().toISOString();
-      }
+      state.lastUpdatedAt = new Date().toISOString();
       scheduleRecoveryRefresh();
       return;
     }
