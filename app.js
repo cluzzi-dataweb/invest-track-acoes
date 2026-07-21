@@ -1257,6 +1257,28 @@ function getFinalSignalReason(asset) {
   return "Sem gatilho claro de compra adicional ou saida";
 }
 
+// Classifica POR QUE um COMPRAR foi gerado, para separar os dois tipos de sinal:
+// "analistas" (consenso comprador + upside) e "preco-medio" (aporte reduz o custo medio).
+function getBuyReason(asset) {
+  if (getFinalSignal(asset) !== "COMPRAR") {
+    return null;
+  }
+
+  const recommendation = normalizeAnalystRecommendation(
+    asset?.analystRecommendation ?? asset?.analyst?.recommendation ?? asset?.recommendation
+  );
+  const upsidePct = toNumber(asset?.upsidePct, NaN);
+  const status = String(asset?.status || "").toUpperCase();
+
+  const analystDriven =
+    recommendation === "COMPRAR" &&
+    Number.isFinite(upsidePct) &&
+    upsidePct > 15 &&
+    status !== "REDUZIR";
+
+  return analystDriven ? "analistas" : "preco-medio";
+}
+
 function getConsensusDecisionHint(asset) {
   const consensus = normalizeAnalystRecommendation(
     asset?.analystRecommendation ?? asset?.analyst?.recommendation ?? asset?.recommendation
@@ -1327,11 +1349,12 @@ function statusBadge(status) {
   return '<span class="badge hold">MANTER</span>';
 }
 
-function finalSignalBadge(signal, reason = "") {
+function finalSignalBadge(signal, reason = "", label = "") {
   const s = String(signal || "MANTER").toUpperCase();
   const cls = s === "COMPRAR" ? "buy" : s === "REDUZIR" ? "reduce" : s === "VENDER" ? "sell" : "hold";
   const title = escapeHtml(reason);
-  return `<span class="badge ${cls}" title="${title}">${s}</span>`;
+  const text = label ? escapeHtml(label) : s;
+  return `<span class="badge ${cls}" title="${title}">${text}</span>`;
 }
 
 function recommendationBadge(rec) {
@@ -1472,6 +1495,7 @@ function buildAgentDecision(row) {
     action,
     finalSignal,
     finalSignalReason,
+    buyReason: finalSignal === "COMPRAR" ? getBuyReason(row) : null,
     confidence,
     riskLevel,
     reasons: reasons.slice(0, 3),
@@ -1508,15 +1532,25 @@ function buildAgentSnapshot(rows) {
       reasons: item.decision.reasons.slice(0, 2)
     }));
 
-  const todayBuy = decisions
+  const buyDecisions = decisions
     .filter((item) => item.decision.finalSignal === "COMPRAR")
-    .sort((a, b) => b.decision.confidence - a.decision.confidence)
+    .sort((a, b) => b.decision.confidence - a.decision.confidence);
+
+  const mapBuyItem = (item) => ({
+    ticker: item.decision.ticker,
+    confidence: item.decision.confidence,
+    note: item.decision.finalSignalReason || item.decision.reasons[0] || "Upside atrativo com consenso positivo"
+  });
+
+  const todayBuyAnalysts = buyDecisions
+    .filter((item) => item.decision.buyReason === "analistas")
     .slice(0, 4)
-    .map((item) => ({
-      ticker: item.decision.ticker,
-      confidence: item.decision.confidence,
-      note: item.decision.finalSignalReason || item.decision.reasons[0] || "Upside atrativo com consenso positivo"
-    }));
+    .map(mapBuyItem);
+
+  const todayBuyAverage = buyDecisions
+    .filter((item) => item.decision.buyReason === "preco-medio")
+    .slice(0, 4)
+    .map(mapBuyItem);
 
   const todaySell = decisions
     .filter((item) => item.decision.finalSignal === "VENDER")
@@ -1572,7 +1606,8 @@ function buildAgentSnapshot(rows) {
     bestSell,
     riskHighlights,
     todaySummary: {
-      buy: todayBuy,
+      buyAnalysts: todayBuyAnalysts,
+      buyAverage: todayBuyAverage,
       sell: todaySell,
       reduce: todayReduce,
       hold: todayHold
@@ -1619,6 +1654,7 @@ function buildOpportunityRadar(rows) {
 
     const finalSignal = getFinalSignal(row);
     const finalSignalReason = getFinalSignalReason(row);
+    const buyReason = finalSignal === "COMPRAR" ? getBuyReason(row) : null;
 
     if (finalSignal === "COMPRAR") {
       score += 12;
@@ -1646,9 +1682,10 @@ function buildOpportunityRadar(rows) {
       status: row.status,
       finalSignal,
       finalSignalReason,
+      buyReason,
       score,
       actionLabel: finalSignal === "COMPRAR"
-        ? "Compra guiada"
+        ? (buyReason === "preco-medio" ? "Compra p/ baixar preco medio" : "Compra guiada")
         : finalSignal === "REDUZIR"
           ? "Venda parcial / realizacao"
           : finalSignal === "VENDER"
@@ -1718,6 +1755,7 @@ function buildOpportunityRadar(rows) {
       status: "WATCHLIST",
       finalSignal,
       finalSignalReason,
+      buyReason: finalSignal === "COMPRAR" ? "analistas" : null,
       score,
       actionLabel: finalSignal === "COMPRAR"
         ? "Entrada com gestao"
@@ -1786,7 +1824,7 @@ function renderOpportunityRadar(rows) {
         <td class="${upsideClass}">${fmtPct(item.upsidePct)}</td>
         <td>${fmtNumber(item.analystsCount, 0)}</td>
         <td class="${scoreClass}"><strong>${item.score}</strong></td>
-        <td>${finalSignalBadge(item.finalSignal || "MANTER", item.finalSignalReason || "")}</td>
+        <td>${finalSignalBadge(item.finalSignal || "MANTER", item.finalSignalReason || "", item.buyReason === "preco-medio" ? "COMPRAR PM" : "")}</td>
         <td>${escapeHtml(item.actionLabel)}</td>
       </tr>
     `;
@@ -1878,8 +1916,12 @@ function renderDecisionAgent(rows) {
       <h4>Resumo automatico de hoje</h4>
       <div class="agent-summary-grid">
         <article>
-          <h5>Comprar</h5>
-          <ul>${renderSummaryItems(snapshot.todaySummary.buy)}</ul>
+          <h5>Comprar (analistas)</h5>
+          <ul>${renderSummaryItems(snapshot.todaySummary.buyAnalysts)}</ul>
+        </article>
+        <article>
+          <h5>Melhorar preco medio</h5>
+          <ul>${renderSummaryItems(snapshot.todaySummary.buyAverage)}</ul>
         </article>
         <article>
           <h5>Manter</h5>
