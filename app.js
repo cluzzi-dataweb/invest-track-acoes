@@ -1138,6 +1138,20 @@ function getFinalSignal(asset) {
     return "VENDER";
   }
 
+  // Calibragem moderada: uma oportunidade forte de compra (consenso comprador +
+  // upside > 15%) supera alertas tecnicos leves (RSI, tendencia, perto do alvo).
+  // Continua respeitando os gatilhos fortes de saida (VENDER, ja tratado acima),
+  // uma venda tecnica iminente e um sinal real de enfraquecimento (status REDUZIR).
+  const strongBuyOpportunity =
+    recommendation === "COMPRAR" &&
+    Number.isFinite(upsidePct) &&
+    upsidePct > 15 &&
+    !isNearTechnicalSell &&
+    status !== "REDUZIR";
+  if (strongBuyOpportunity) {
+    return "COMPRAR";
+  }
+
   // Evita venda agressiva em cenarios de consenso comprador com upside positivo sem gatilho forte.
   if (
     recommendation === "COMPRAR" &&
