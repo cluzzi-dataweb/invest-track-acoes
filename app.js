@@ -1152,6 +1152,24 @@ function getFinalSignal(asset) {
     return "COMPRAR";
   }
 
+  // COMPRAR tambem quando aportar melhora o seu preco medio:
+  // (a) o preco atingiu a sua faixa de recompra ("Preco para comprar mais"), ou
+  // (b) o preco caiu abaixo do seu preco medio e ainda ha upside relevante,
+  // desde que o consenso nao seja negativo e nao haja gatilho forte de saida.
+  const consensusNotNegative = recommendation !== "VENDER" && recommendation !== "REDUZIR";
+  const inBuyMoreZone = status === "COMPRAR MAIS";
+  const belowAverageWithUpside =
+    Number.isFinite(pnlPct) && pnlPct < 0 &&
+    Number.isFinite(upsidePct) && upsidePct > 15;
+  if (
+    consensusNotNegative &&
+    !isNearTechnicalSell &&
+    status !== "REDUZIR" &&
+    (inBuyMoreZone || belowAverageWithUpside)
+  ) {
+    return "COMPRAR";
+  }
+
   // Evita venda agressiva em cenarios de consenso comprador com upside positivo sem gatilho forte.
   if (
     recommendation === "COMPRAR" &&
@@ -1189,6 +1207,16 @@ function getFinalSignalReason(asset) {
   const upsidePct = toNumber(asset?.upsidePct, NaN);
   const pnlPct = toNumber(asset?.pnlPct, NaN);
   const status = String(asset?.status || "").toUpperCase();
+
+  if (signal === "COMPRAR") {
+    if (status === "COMPRAR MAIS") {
+      return "Preco na sua faixa de recompra: aporte melhora o seu preco medio";
+    }
+    if (Number.isFinite(pnlPct) && pnlPct < 0) {
+      return "Preco abaixo do seu preco medio com upside: aporte reduz o custo medio";
+    }
+    return "Upside atrativo com consenso positivo";
+  }
 
   if (consensus && consensus !== signal) {
     if (consensus === "COMPRAR" && signal === "REDUZIR") {
