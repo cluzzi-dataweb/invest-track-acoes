@@ -798,7 +798,20 @@ export default async function handler(req, res) {
     }
 
     if (pathname === '/api/health') {
-      sendJson(res, 200, { status: 'ok', provider: 'yahoo', runtime: 'vercel-function' })
+      const cloudReady = isCloudDatabaseConfigured()
+      sendJson(res, 200, {
+        status: 'ok',
+        provider: 'yahoo',
+        runtime: 'vercel-function',
+        // "supabase" = dados persistem; "memoria" = dados somem a cada redeploy/cold start.
+        cloud: cloudReady ? 'supabase' : 'memoria',
+        cloudDetails: {
+          hasUrl: Boolean(String(process.env.SUPABASE_URL ?? '').trim()),
+          hasServiceKey: Boolean(String(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim()),
+          usersTable: String(process.env.SUPABASE_USERS_TABLE ?? 'invest_track_users').trim(),
+          cloudTable: String(process.env.SUPABASE_CLOUD_TABLE ?? 'invest_track_cloud_data').trim(),
+        },
+      })
       return
     }
 
