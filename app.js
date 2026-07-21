@@ -615,6 +615,28 @@ function buildLegacyCloudPayload() {
   };
 }
 
+function legacyPayloadHasData(data) {
+  if (!data || typeof data !== "object") {
+    return false;
+  }
+
+  return (
+    (Array.isArray(data.portfolio) && data.portfolio.length > 0) ||
+    (Array.isArray(data.salesHistory) && data.salesHistory.length > 0) ||
+    (Array.isArray(data.watchlist) && data.watchlist.length > 0) ||
+    (Array.isArray(data.alerts) && data.alerts.length > 0)
+  );
+}
+
+function localHasData() {
+  return (
+    (Array.isArray(state.portfolio) && state.portfolio.length > 0) ||
+    (Array.isArray(state.salesHistory) && state.salesHistory.length > 0) ||
+    (Array.isArray(state.watchlist) && state.watchlist.length > 0) ||
+    (Array.isArray(state.alerts) && state.alerts.length > 0)
+  );
+}
+
 function applyLegacyCloudPayload(payload) {
   const data = payload && typeof payload === "object" ? payload : {};
   const currentApiBaseUrl = state.settings.apiBaseUrl;
@@ -712,35 +734,42 @@ async function restoreCloudSession() {
   }
 }
 
+// Returns "loaded" (cloud data applied), "empty" (no usable backup — safe to push
+// local up) or "error" (network/auth failure — must NOT push local over the cloud).
 async function loadLegacyCloudData() {
   if (!state.session.user || !state.session.token) {
     state.session.cloudStatus = "local";
-    return false;
+    return "error";
   }
 
-  // Probe legacy cloud only when we already detected legacy data for this account.
-  const shouldProbeLegacyCloud = hasLegacyCloudAvailabilityHint();
-  if (!shouldProbeLegacyCloud) {
-    state.session.cloudStatus = "sem backup";
-    return false;
-  }
-
+  // Always consult the server. The previous local "hint" gate skipped this fetch
+  // after the browser storage was cleared, which lost the cloud backup on re-login.
   try {
     const payload = await authJson("/api/legacy-cloud/data", { method: "GET" });
-    applyLegacyCloudPayload(payload.data);
+    const cloudData = payload?.data;
+
+    // Cloud backup exists but is empty while we still hold local data: keep local
+    // and let it re-sync up, so an empty snapshot never wipes the local portfolio.
+    if (!legacyPayloadHasData(cloudData) && localHasData()) {
+      setLegacyCloudAvailability(true);
+      state.session.cloudStatus = "sem backup";
+      return "empty";
+    }
+
+    applyLegacyCloudPayload(cloudData);
     setLegacyCloudAvailability(true);
     state.session.cloudStatus = "sincronizada";
     state.session.lastCloudSyncAt = payload.updatedAt || new Date().toISOString();
-    return true;
+    return "loaded";
   } catch (error) {
     if (String(error?.message || "").includes("404")) {
       setLegacyCloudAvailability(false);
       state.session.cloudStatus = "sem backup";
-      return false;
+      return "empty";
     }
 
     state.session.cloudStatus = "erro";
-    return false;
+    return "error";
   }
 }
 
@@ -4166,13 +4195,25 @@ function bindEvents() {
 
         try {
           await loginCloudAccount(email, password);
-          const loaded = await loadLegacyCloudData();
-          if (!loaded) {
+          const status = await loadLegacyCloudData();
+
+          if (status === "empty") {
+            // No usable cloud backup yet: safe to send the local data up.
             await syncLegacyCloudData(false);
           }
+
           render();
           updateStatusLine();
-          window.alert(loaded ? "Conta conectada e dados carregados da nuvem." : "Conta conectada. Seu backup em nuvem foi iniciado.");
+
+          if (status === "loaded") {
+            window.alert("Conta conectada e dados carregados da nuvem.");
+          } else if (status === "empty") {
+            window.alert("Conta conectada. Seu backup em nuvem foi iniciado.");
+          } else {
+            // Error reaching the cloud: do NOT push local data, to avoid
+            // overwriting an existing backup with a possibly empty snapshot.
+            window.alert("Conta conectada, mas houve um erro ao acessar a nuvem. Seus dados locais NAO foram enviados para nao sobrescrever um backup existente. Tente sincronizar novamente mais tarde.");
+          }
         } catch (error) {
           const message = String(error?.message || "Falha ao entrar.");
           const invalidCredentials = message.includes("401") && message.toLowerCase().includes("senha");
