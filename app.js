@@ -2346,8 +2346,17 @@ async function fetchAnalystData(ticker) {
       targetMean: toNumber(financialData.targetMeanPrice?.raw, NaN),
       targetMin: toNumber(financialData.targetLowPrice?.raw, NaN),
       targetMax: toNumber(financialData.targetHighPrice?.raw, NaN),
+      distribution: {
+        strongBuy: strongBuyVotes,
+        buy: plainBuyVotes,
+        hold,
+        sell: toNumber(recommendationTrend.sell, 0),
+        strongSell: toNumber(recommendationTrend.strongSell, 0),
+      },
       recommendation,
+      recommendationRaw: recommendation,
       analystsCount: toNumber(financialData.numberOfAnalystOpinions?.raw, 0),
+      stale: false,
       available: true,
       source: "yahoo-summary"
     };
