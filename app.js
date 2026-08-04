@@ -1677,20 +1677,16 @@ function buildOpportunityRadar(rows) {
     const upsidePct = calculateUpside(toNumber(quote.price, NaN), toNumber(analyst.targetMean, NaN));
     const analystsCount = toNumber(analyst.analystsCount, 0);
     const recommendation = String(analyst.recommendation || "");
-    const finalSignal = getFinalSignal({
+    const watchAsset = {
       recommendation,
       upsidePct,
       currentPrice: toNumber(quote.price, NaN),
       technicalSellPrice: NaN,
-      status: "WATCHLIST"
-    });
-    const finalSignalReason = getFinalSignalReason({
-      recommendation,
-      upsidePct,
-      currentPrice: toNumber(quote.price, NaN),
-      technicalSellPrice: NaN,
-      status: "WATCHLIST"
-    });
+      status: "WATCHLIST",
+      analyst,
+    };
+    const finalSignal = getFinalSignal(watchAsset);
+    const finalSignalReason = getFinalSignalReason(watchAsset);
 
     let score = 46;
     if (Number.isFinite(upsidePct)) {
