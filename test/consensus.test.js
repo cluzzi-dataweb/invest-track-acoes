@@ -9,6 +9,7 @@ test('label from score thresholds', () => {
   assert.equal(consensusLabelFromScore(0), 'MANTER')
   assert.equal(consensusLabelFromScore(-1), 'VENDA')
   assert.equal(consensusLabelFromScore(-2), 'VENDA FORTE')
+  assert.equal(consensusLabelFromScore(NaN), 'MANTER')
 })
 
 test('strong buy distribution with many analysts and tight targets = high conviction', () => {
@@ -18,6 +19,7 @@ test('strong buy distribution with many analysts and tight targets = high convic
     targetMin: 60, targetMean: 65, targetMax: 72,
   })
   assert.equal(r.label, 'COMPRA FORTE')
+  assert.equal(r.score, 29 / 18)
   assert.equal(r.available, true)
   assert.ok(r.conviction >= 70, `conviction ${r.conviction} should be >= 70`)
   assert.equal(r.highConviction, true)
