@@ -70,7 +70,7 @@ export function createAnalystSource(options = {}) {
         const data = mapSummaryToConsensus(ticker, summary)
         data.fetchedAt = new Date().toISOString()
         if (data.available) {
-          lastGood.set(ticker, data)
+          lastGood.set(ticker, { ...data })
         }
         return data
       } catch (error) {
