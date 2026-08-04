@@ -868,6 +868,10 @@ function scheduleLegacyCloudSync() {
 
   if (window.Backup && typeof window.Backup.isPayloadEmpty === "function" &&
       window.Backup.isPayloadEmpty(buildLegacyCloudPayload())) {
+    if (state.session.cloudSyncTimer) {
+      clearTimeout(state.session.cloudSyncTimer);
+      state.session.cloudSyncTimer = null;
+    }
     return; // nunca empurra um backup vazio automaticamente (protecao anti-perda)
   }
 
