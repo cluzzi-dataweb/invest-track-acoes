@@ -4,9 +4,11 @@ import { createServer } from 'node:http'
 import { WebSocketServer } from 'ws'
 import YahooFinance from 'yahoo-finance2'
 import { loginUser, registerUser, verifyToken } from './auth.js'
+import { createAnalystSource } from './analystSource.js'
 import { readCloudProfile, readLegacyUserCloudData, readPortfolio, readUserCloudData, writeCloudProfile, writeLegacyUserCloudData, writePortfolio, writeUserCloudData } from './storage.js'
 
 const yahooFinance = new YahooFinance()
+const analystSource = createAnalystSource({ yahooFinance })
 
 const app = express()
 const PORT = Number(process.env.API_PORT ?? 3333)
@@ -221,33 +223,26 @@ async function getAnalystConsensusByTicker(ticker) {
     return cached
   }
 
-  const symbol = toYahooSymbol(ticker)
-  const payload = await yahooFinance.quoteSummary(symbol, {
-    modules: ['financialData', 'recommendationTrend'],
-  })
-
-  const financialData = payload?.financialData ?? {}
-  const trend = payload?.recommendationTrend?.trend?.[0] ?? {}
-
-  const targetMean = Number(financialData?.targetMeanPrice ?? NaN)
-  const targetMin = Number(financialData?.targetLowPrice ?? NaN)
-  const targetMax = Number(financialData?.targetHighPrice ?? NaN)
-  const analystsCount = Number(financialData?.numberOfAnalystOpinions ?? 0)
-  const recommendation = mapRecommendation(financialData?.recommendationKey, trend)
-
-  const available = Number.isFinite(targetMean) || Number.isFinite(targetMin) || Number.isFinite(targetMax)
+  const cleanTicker = normalizeTicker(ticker)
+  const consensus = await analystSource.fetchAnalystConsensus(cleanTicker)
+  const recommendation = mapRecommendation(consensus.recommendationRaw, consensus.distribution)
 
   const data = {
-    ticker,
-    targetMean,
-    targetMin,
-    targetMax,
+    ticker: cleanTicker,
+    targetMean: consensus.targetMean,
+    targetMin: consensus.targetMin,
+    targetMax: consensus.targetMax,
+    distribution: consensus.distribution,
     recommendation,
-    analystsCount,
-    available,
+    recommendationRaw: consensus.recommendationRaw,
+    analystsCount: consensus.analystsCount,
+    available: consensus.available,
+    stale: consensus.stale,
   }
 
-  setCacheValue(analystCache, cacheKey, data, ANALYST_CACHE_TTL_MS)
+  if (data.available && !consensus.stale) {
+    setCacheValue(analystCache, cacheKey, data, ANALYST_CACHE_TTL_MS)
+  }
 
   return data
 }
