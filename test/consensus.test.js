@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { computeConsensus, consensusLabelFromScore } from '../lib/consensus.js'
+import { computeConsensus, consensusLabelFromScore, decideSignal } from '../lib/consensus.js'
 
 test('label from score thresholds', () => {
   assert.equal(consensusLabelFromScore(2), 'COMPRA FORTE')
@@ -64,8 +64,6 @@ test('unavailable when no data at all', () => {
   assert.equal(r.conviction, 0)
 })
 
-import { decideSignal } from '../lib/consensus.js'
-
 const base = {
   recommendation: 'COMPRAR', consensusLabel: 'COMPRA', conviction: 80,
   upsidePct: 30, pnlPct: 0, status: 'MANTER',
@@ -73,7 +71,7 @@ const base = {
 }
 
 test('high-conviction buy overrides a soft technical alert', () => {
-  assert.equal(decideSignal({ ...base, status: 'ATENCAO' }), 'COMPRAR')
+  assert.equal(decideSignal({ ...base, upsidePct: 10, status: 'ATENCAO', conviction: 80 }), 'COMPRAR')
 })
 
 test('hard exit (status VENDER) beats high-conviction buy', () => {
@@ -81,11 +79,19 @@ test('hard exit (status VENDER) beats high-conviction buy', () => {
 })
 
 test('high-conviction VENDA FORTE => VENDER', () => {
-  assert.equal(decideSignal({ ...base, consensusLabel: 'VENDA FORTE', recommendation: 'VENDER', upsidePct: -8 }), 'VENDER')
+  assert.equal(decideSignal({ ...base, consensusLabel: 'VENDA FORTE', recommendation: 'MANTER', upsidePct: 2, conviction: 80 }), 'VENDER')
+})
+
+test('low-conviction VENDA FORTE twin => MANTER (conviction gate)', () => {
+  assert.equal(decideSignal({ ...base, consensusLabel: 'VENDA FORTE', recommendation: 'MANTER', upsidePct: 2, conviction: 40 }), 'MANTER')
 })
 
 test('high-conviction VENDA => REDUZIR', () => {
-  assert.equal(decideSignal({ ...base, consensusLabel: 'VENDA', recommendation: 'REDUZIR', upsidePct: 2 }), 'REDUZIR')
+  assert.equal(decideSignal({ ...base, consensusLabel: 'VENDA', recommendation: 'MANTER', upsidePct: 2, conviction: 80 }), 'REDUZIR')
+})
+
+test('low-conviction VENDA twin => MANTER (conviction gate)', () => {
+  assert.equal(decideSignal({ ...base, consensusLabel: 'VENDA', recommendation: 'MANTER', upsidePct: 2, conviction: 40 }), 'MANTER')
 })
 
 test('low conviction falls back to legacy: attention + buy with no profit => MANTER', () => {
