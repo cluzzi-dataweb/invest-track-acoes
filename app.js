@@ -1103,99 +1103,35 @@ function normalizeAnalystRecommendation(value) {
   return null;
 }
 
+function computeAssetConsensus(asset) {
+  const source = asset?.analyst && typeof asset.analyst === "object" ? asset.analyst : asset;
+  if (window.Consensus && typeof window.Consensus.computeConsensus === "function") {
+    return window.Consensus.computeConsensus(source);
+  }
+  return { label: "-", conviction: 0, available: false, highConviction: false, components: null };
+}
+
 function getFinalSignal(asset) {
   const recommendation = normalizeAnalystRecommendation(
     asset?.analystRecommendation ?? asset?.analyst?.recommendation ?? asset?.recommendation
   );
-  const upsidePct = toNumber(asset?.upsidePct, NaN);
-  const pnlPct = toNumber(asset?.pnlPct, NaN);
-  const technicalSellPrice = toNumber(asset?.technicalSellPrice, NaN);
-  const currentPrice = toNumber(asset?.currentPrice, NaN);
-  const status = String(asset?.status || "").toUpperCase();
+  const consensus = computeAssetConsensus(asset);
 
-  const hasStrongExitStatus = status === "VENDER";
-  const hasAttentionStatus = status === "ATENCAO";
-  const isNearTechnicalSell =
-    Number.isFinite(currentPrice) &&
-    Number.isFinite(technicalSellPrice) &&
-    technicalSellPrice > 0 &&
-    currentPrice >= technicalSellPrice * 0.985;
+  const input = {
+    recommendation,
+    consensusLabel: consensus?.label ?? "-",
+    conviction: toNumber(consensus?.conviction, 0),
+    upsidePct: toNumber(asset?.upsidePct, NaN),
+    pnlPct: toNumber(asset?.pnlPct, NaN),
+    status: String(asset?.status || "").toUpperCase(),
+    currentPrice: toNumber(asset?.currentPrice, NaN),
+    technicalSellPrice: toNumber(asset?.technicalSellPrice, NaN),
+  };
 
-  const upsideNonPositive = Number.isFinite(upsidePct) && upsidePct <= 0;
-  const upsideClearlyNegative = Number.isFinite(upsidePct) && upsidePct <= -5;
-  const upsideVeryLowWithProfit = Number.isFinite(upsidePct) && upsidePct <= 5 && Number.isFinite(pnlPct) && pnlPct >= 12;
-  const lowUpsideWithProfit = Number.isFinite(upsidePct) && upsidePct <= 10 && Number.isFinite(pnlPct) && pnlPct >= 15;
-  const hasHardExitByTechnical = isNearTechnicalSell && Number.isFinite(pnlPct) && pnlPct >= 15 && Number.isFinite(upsidePct) && upsidePct <= 3;
-  const hasHardExitByAsymmetry = upsideClearlyNegative || (upsideNonPositive && Number.isFinite(pnlPct) && pnlPct >= 20);
-
-  if (
-    hasStrongExitStatus ||
-    recommendation === "VENDER" ||
-    hasHardExitByAsymmetry ||
-    hasHardExitByTechnical ||
-    (hasAttentionStatus && recommendation === "REDUZIR" && Number.isFinite(upsidePct) && upsidePct <= 8)
-  ) {
-    return "VENDER";
+  if (window.Consensus && typeof window.Consensus.decideSignal === "function") {
+    return window.Consensus.decideSignal(input);
   }
-
-  // Calibragem moderada: uma oportunidade forte de compra (consenso comprador +
-  // upside > 15%) supera alertas tecnicos leves (RSI, tendencia, perto do alvo).
-  // Continua respeitando os gatilhos fortes de saida (VENDER, ja tratado acima),
-  // uma venda tecnica iminente e um sinal real de enfraquecimento (status REDUZIR).
-  const strongBuyOpportunity =
-    recommendation === "COMPRAR" &&
-    Number.isFinite(upsidePct) &&
-    upsidePct > 15 &&
-    !isNearTechnicalSell &&
-    status !== "REDUZIR";
-  if (strongBuyOpportunity) {
-    return "COMPRAR";
-  }
-
-  // COMPRAR tambem quando aportar melhora o seu preco medio:
-  // (a) o preco atingiu a sua faixa de recompra ("Preco para comprar mais"), ou
-  // (b) o preco caiu abaixo do seu preco medio e ainda ha upside relevante,
-  // desde que o consenso nao seja negativo e nao haja gatilho forte de saida.
-  const consensusNotNegative = recommendation !== "VENDER" && recommendation !== "REDUZIR";
-  const inBuyMoreZone = status === "COMPRAR MAIS";
-  const belowAverageWithUpside =
-    Number.isFinite(pnlPct) && pnlPct < 0 &&
-    Number.isFinite(upsidePct) && upsidePct > 15;
-  if (
-    consensusNotNegative &&
-    !isNearTechnicalSell &&
-    status !== "REDUZIR" &&
-    (inBuyMoreZone || belowAverageWithUpside)
-  ) {
-    return "COMPRAR";
-  }
-
-  // Evita venda agressiva em cenarios de consenso comprador com upside positivo sem gatilho forte.
-  if (
-    recommendation === "COMPRAR" &&
-    Number.isFinite(upsidePct) &&
-    upsidePct > 0 &&
-    hasAttentionStatus
-  ) {
-    return (Number.isFinite(pnlPct) && pnlPct >= 12) ? "REDUZIR" : "MANTER";
-  }
-
-  if (
-    status === "REDUZIR" ||
-    lowUpsideWithProfit ||
-    upsideVeryLowWithProfit ||
-    (hasAttentionStatus && Number.isFinite(pnlPct) && pnlPct >= 10) ||
-    recommendation === "REDUZIR"
-  ) {
-    return "REDUZIR";
-  }
-
-  const attractiveUpside = Number.isFinite(upsidePct) && upsidePct > 15;
-  const hasStrongAlert = hasAttentionStatus || status === "REDUZIR" || status === "VENDER";
-  if (recommendation === "COMPRAR" && attractiveUpside && !hasStrongAlert && !isNearTechnicalSell) {
-    return "COMPRAR";
-  }
-
+  // Defensive fallback if the module has not loaded yet.
   return "MANTER";
 }
 
@@ -1269,12 +1205,14 @@ function getBuyReason(asset) {
   );
   const upsidePct = toNumber(asset?.upsidePct, NaN);
   const status = String(asset?.status || "").toUpperCase();
+  const consensus = computeAssetConsensus(asset);
+  const highConvictionBuy =
+    consensus?.highConviction &&
+    (consensus.label === "COMPRA FORTE" || consensus.label === "COMPRA");
 
   const analystDriven =
-    recommendation === "COMPRAR" &&
-    Number.isFinite(upsidePct) &&
-    upsidePct > 15 &&
-    status !== "REDUZIR";
+    highConvictionBuy ||
+    (recommendation === "COMPRAR" && Number.isFinite(upsidePct) && upsidePct > 15 && status !== "REDUZIR");
 
   return analystDriven ? "analistas" : "preco-medio";
 }
@@ -1355,6 +1293,37 @@ function finalSignalBadge(signal, reason = "", label = "") {
   const title = escapeHtml(reason);
   const text = label ? escapeHtml(label) : s;
   return `<span class="badge ${cls}" title="${title}">${text}</span>`;
+}
+
+function consensusBadge(consensus) {
+  const label = consensus?.label || "-";
+  if (!consensus || !consensus.available || label === "-") {
+    return '<span class="badge rec-na">-</span>';
+  }
+  const cls =
+    label === "COMPRA FORTE" ? "rec-strong-buy" :
+    label === "COMPRA" ? "buy" :
+    label === "MANTER" ? "hold" :
+    label === "VENDA" ? "reduce" : "sell";
+  const arrow = label === "COMPRA FORTE" ? "&#9650; " : label === "VENDA FORTE" ? "&#9660; " : "";
+  const c = consensus.components || {};
+  const tip = `${Math.round(toNumber(c.analystsCount, 0))} analistas · ` +
+    `${Math.round(toNumber(c.agreement, 0) * 100)}% concordam · ` +
+    `conviccao ${consensus.conviction}`;
+  return `<span class="badge ${cls}" title="${escapeHtml(tip)}">${arrow}${escapeHtml(label)}</span>`;
+}
+
+function convictionCell(consensus) {
+  if (!consensus || !consensus.available) {
+    return '<td class="muted-text">-</td>';
+  }
+  const v = toNumber(consensus.conviction, 0);
+  const cls = v >= 65 ? "positive" : v >= 45 ? "warn-text" : "muted-text";
+  const c = consensus.components || {};
+  const tip = `Cobertura ${Math.round(toNumber(c.coverage, 0) * 100)}% · ` +
+    `Concordancia ${Math.round(toNumber(c.agreement, 0) * 100)}% · ` +
+    `Aperto do alvo ${Math.round(toNumber(c.tightness, 0) * 100)}%`;
+  return `<td class="${cls}" title="${escapeHtml(tip)}"><strong>${v}</strong></td>`;
 }
 
 function recommendationBadge(rec) {
@@ -1676,6 +1645,9 @@ function buildOpportunityRadar(rows) {
       source: "carteira",
       currentPrice: toNumber(row.currentPrice, NaN),
       targetMean: toNumber(row.analyst?.targetMean, NaN),
+      distribution: row.analyst?.distribution,
+      targetMin: toNumber(row.analyst?.targetMin, NaN),
+      targetMax: toNumber(row.analyst?.targetMax, NaN),
       upsidePct,
       analystsCount,
       recommendation,
@@ -1705,20 +1677,16 @@ function buildOpportunityRadar(rows) {
     const upsidePct = calculateUpside(toNumber(quote.price, NaN), toNumber(analyst.targetMean, NaN));
     const analystsCount = toNumber(analyst.analystsCount, 0);
     const recommendation = String(analyst.recommendation || "");
-    const finalSignal = getFinalSignal({
+    const watchAsset = {
       recommendation,
       upsidePct,
       currentPrice: toNumber(quote.price, NaN),
       technicalSellPrice: NaN,
-      status: "WATCHLIST"
-    });
-    const finalSignalReason = getFinalSignalReason({
-      recommendation,
-      upsidePct,
-      currentPrice: toNumber(quote.price, NaN),
-      technicalSellPrice: NaN,
-      status: "WATCHLIST"
-    });
+      status: "WATCHLIST",
+      analyst,
+    };
+    const finalSignal = getFinalSignal(watchAsset);
+    const finalSignalReason = getFinalSignalReason(watchAsset);
 
     let score = 46;
     if (Number.isFinite(upsidePct)) {
@@ -1749,6 +1717,9 @@ function buildOpportunityRadar(rows) {
       source: "watchlist",
       currentPrice: toNumber(quote.price, NaN),
       targetMean: toNumber(analyst.targetMean, NaN),
+      distribution: analyst.distribution,
+      targetMin: toNumber(analyst.targetMin, NaN),
+      targetMax: toNumber(analyst.targetMax, NaN),
       upsidePct,
       analystsCount,
       recommendation,
@@ -1815,6 +1786,14 @@ function renderOpportunityRadar(rows) {
   const rowsHtml = filtered.map((item) => {
     const scoreClass = item.score >= 75 ? "positive" : item.score >= 55 ? "warn-text" : "negative";
     const upsideClass = toNumber(item.upsidePct, 0) >= 0 ? "positive" : "negative";
+    const consensus = window.Consensus && window.Consensus.computeConsensus
+      ? window.Consensus.computeConsensus({
+          distribution: item.distribution,
+          analystsCount: item.analystsCount,
+          targetMin: item.targetMin, targetMean: item.targetMean, targetMax: item.targetMax,
+          recommendationRaw: item.recommendation,
+        })
+      : { label: "-", conviction: 0, available: false };
     return `
       <tr>
         <td class="mono">${escapeHtml(item.ticker)}</td>
@@ -1824,6 +1803,7 @@ function renderOpportunityRadar(rows) {
         <td class="${upsideClass}">${fmtPct(item.upsidePct)}</td>
         <td>${fmtNumber(item.analystsCount, 0)}</td>
         <td class="${scoreClass}"><strong>${item.score}</strong></td>
+        ${convictionCell(consensus)}
         <td>${finalSignalBadge(item.finalSignal || "MANTER", item.finalSignalReason || "", item.buyReason === "preco-medio" ? "COMPRAR PM" : "")}</td>
         <td>${escapeHtml(item.actionLabel)}</td>
       </tr>
@@ -1845,6 +1825,7 @@ function renderOpportunityRadar(rows) {
               <th>Upside %</th>
               <th>Analistas</th>
               <th>Score</th>
+              <th>Convicção</th>
               <th>Sinal</th>
               <th>Acao sugerida</th>
             </tr>
@@ -2366,8 +2347,11 @@ async function fetchAnalystData(ticker) {
       targetMean: toNumber(payload?.targetMean, NaN),
       targetMin: toNumber(payload?.targetMin, NaN),
       targetMax: toNumber(payload?.targetMax, NaN),
+      distribution: payload?.distribution && typeof payload.distribution === "object" ? payload.distribution : null,
       recommendation: payload?.recommendation || "-",
+      recommendationRaw: payload?.recommendationRaw || "",
       analystsCount: toNumber(payload?.analystsCount, 0),
+      stale: payload?.stale === true,
       available: true,
       source: "backend"
     };
@@ -2405,8 +2389,17 @@ async function fetchAnalystData(ticker) {
       targetMean: toNumber(financialData.targetMeanPrice?.raw, NaN),
       targetMin: toNumber(financialData.targetLowPrice?.raw, NaN),
       targetMax: toNumber(financialData.targetHighPrice?.raw, NaN),
+      distribution: {
+        strongBuy: strongBuyVotes,
+        buy: plainBuyVotes,
+        hold,
+        sell: toNumber(recommendationTrend.sell, 0),
+        strongSell: toNumber(recommendationTrend.strongSell, 0),
+      },
       recommendation,
+      recommendationRaw: recommendation,
       analystsCount: toNumber(financialData.numberOfAnalystOpinions?.raw, 0),
+      stale: false,
       available: true,
       source: "yahoo-summary"
     };
@@ -3118,6 +3111,9 @@ function renderPortfolioPanel(rows) {
     .map((row) => {
       const ticker = normalizeTicker(row.asset.ticker);
       const analystRec = row.analyst.available ? row.analyst.recommendation : "";
+      const rowConsensus = window.Consensus && window.Consensus.computeConsensus
+        ? window.Consensus.computeConsensus(row.analyst)
+        : { label: "-", conviction: 0, available: false };
       const reasonText = row.finalSignalReason;
       const conflictHint = getConsensusDecisionHint(row);
       const reasonWithHint = conflictHint ? `${reasonText}. ${conflictHint}` : reasonText;
@@ -3165,7 +3161,8 @@ function renderPortfolioPanel(rows) {
           <td class="${currentPriceClass}">${fmtCurrency(toNumber(row.asset.buyMorePrice, NaN))}</td>
           <td class="${targetMeanClass}">${fmtCurrency(toNumber(row.analyst.targetMean, NaN))}</td>
           <td>${fmtCurrency(toNumber(row.analyst.targetMax, NaN))}</td>
-          <td class="consensus-cell">${recommendationBadge(analystRec)}</td>
+          <td class="consensus-cell">${consensusBadge(rowConsensus)}</td>
+          ${convictionCell(rowConsensus)}
           <td class="${toNumber(row.upsidePct, 0) >= 0 ? "positive" : "negative"}">${fmtPct(row.upsidePct)}</td>
           <td class="${technicalSellClass}">${fmtCurrency(row.technicalSellPrice)}</td>
           <td>${statusBadge(row.status)}</td>
@@ -3250,6 +3247,7 @@ function renderPortfolioPanel(rows) {
             <th>Preco-alvo analistas</th>
             <th>Alvo maximo analistas</th>
             <th class="context-col">Consenso analistas</th>
+            <th>Convicção</th>
             <th>Upside ate alvo %</th>
             <th>Preco tecnico venda</th>
             <th>Status</th>
@@ -3263,7 +3261,7 @@ function renderPortfolioPanel(rows) {
           </tr>
         </thead>
         <tbody>
-          ${rowsHtml || '<tr><td colspan="23" class="empty">Nenhum ativo cadastrado.</td></tr>'}
+          ${rowsHtml || '<tr><td colspan="24" class="empty">Nenhum ativo cadastrado.</td></tr>'}
         </tbody>
       </table>
     </div>

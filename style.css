@@ -900,3 +900,8 @@ td.decision-cell .badge {
     grid-column: span 1;
   }
 }
+
+.agent-radar-table th:nth-last-child(3),
+.agent-radar-table td:nth-last-child(3) {
+  text-align: center;
+}
