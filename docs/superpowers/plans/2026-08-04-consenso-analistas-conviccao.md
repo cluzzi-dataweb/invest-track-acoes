@@ -297,7 +297,9 @@ test('high-conviction VENDA => REDUZIR', () => {
 })
 
 test('low conviction falls back to legacy: attention + buy with no profit => MANTER', () => {
-  assert.equal(decideSignal({ ...base, conviction: 40, status: 'ATENCAO', pnlPct: 0 }), 'MANTER')
+  // upsidePct 10 so the strong-opportunity path (upside > 15) does not fire and
+  // we actually exercise the soft-attention fallback.
+  assert.equal(decideSignal({ ...base, conviction: 40, status: 'ATENCAO', pnlPct: 0, upsidePct: 10 }), 'MANTER')
 })
 
 test('buy to improve average: below-average price with upside, neutral consensus => COMPRAR', () => {
