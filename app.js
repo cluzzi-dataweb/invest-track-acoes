@@ -810,9 +810,65 @@ async function syncLegacyCloudData(showMessage = false) {
   }
 }
 
+function exportPortfolioBackup() {
+  if (!window.Backup || typeof window.Backup.buildBackup !== "function") {
+    window.alert("Nao foi possivel preparar o backup agora. Recarregue a pagina e tente de novo.");
+    return;
+  }
+  const payload = buildLegacyCloudPayload();
+  const backup = window.Backup.buildBackup(payload, new Date().toISOString());
+  const stamp = new Date().toISOString().slice(0, 10);
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `carteira-backup-${stamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function importPortfolioBackup(file) {
+  if (!file) return;
+  if (!window.Backup || typeof window.Backup.parseBackup !== "function") {
+    window.alert("Nao foi possivel importar agora. Recarregue a pagina e tente de novo.");
+    return;
+  }
+  let text = "";
+  try {
+    text = await file.text();
+  } catch {
+    window.alert("Nao foi possivel ler o arquivo.");
+    return;
+  }
+  const result = window.Backup.parseBackup(text);
+  if (!result.ok) {
+    window.alert(`Backup invalido: ${result.error}`);
+    return;
+  }
+  const count = Array.isArray(result.data.portfolio) ? result.data.portfolio.length : 0;
+  const confirmed = window.confirm(`Isto vai substituir sua carteira atual por ${count} ativo(s) do backup. Continuar?`);
+  if (!confirmed) return;
+
+  applyLegacyCloudPayload(result.data);
+  render();
+  updateStatusLine();
+  if (state.session.user && state.session.token) {
+    await syncLegacyCloudData(true);
+  } else {
+    window.alert("Backup restaurado neste navegador. Entre na sua conta para salvar na nuvem.");
+  }
+}
+
 function scheduleLegacyCloudSync() {
   if (state.isApplyingCloudSnapshot || !state.settings.cloudAutoSync || !state.session.user || !state.session.token) {
     return;
+  }
+
+  if (window.Backup && typeof window.Backup.isPayloadEmpty === "function" &&
+      window.Backup.isPayloadEmpty(buildLegacyCloudPayload())) {
+    return; // nunca empurra um backup vazio automaticamente (protecao anti-perda)
   }
 
   if (state.session.cloudSyncTimer) {
@@ -3983,6 +4039,11 @@ function renderSettingsPanel() {
           <button type="button" id="btnCloudLogin">Entrar</button>
           <button type="button" id="btnCloudLogout">Sair</button>
           <button type="button" id="btnCloudSyncNow">Sincronizar agora</button>
+          <div class="backup-actions" style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+            <button type="button" class="btn" id="btnExportBackup">Exportar carteira (backup)</button>
+            <button type="button" class="btn" id="btnImportBackup">Importar backup</button>
+            <input type="file" id="inputImportBackup" accept="application/json,.json" style="display:none" />
+          </div>
         </div>
       </form>
     </div>
@@ -4340,6 +4401,22 @@ function bindEvents() {
         state.settings.cloudAutoSync = cloudAutoSync === "on";
         saveSettings();
         syncLegacyCloudData(true);
+      };
+    }
+
+    const btnExportBackup = document.getElementById("btnExportBackup");
+    if (btnExportBackup) {
+      btnExportBackup.onclick = () => exportPortfolioBackup();
+    }
+
+    const btnImportBackup = document.getElementById("btnImportBackup");
+    const inputImportBackup = document.getElementById("inputImportBackup");
+    if (btnImportBackup && inputImportBackup) {
+      btnImportBackup.onclick = () => inputImportBackup.click();
+      inputImportBackup.onchange = async () => {
+        const file = inputImportBackup.files && inputImportBackup.files[0];
+        await importPortfolioBackup(file);
+        inputImportBackup.value = ""; // allow re-importing the same file
       };
     }
   }
