@@ -1103,99 +1103,35 @@ function normalizeAnalystRecommendation(value) {
   return null;
 }
 
+function computeAssetConsensus(asset) {
+  const source = asset?.analyst && typeof asset.analyst === "object" ? asset.analyst : asset;
+  if (window.Consensus && typeof window.Consensus.computeConsensus === "function") {
+    return window.Consensus.computeConsensus(source);
+  }
+  return { label: "-", conviction: 0, available: false, highConviction: false, components: null };
+}
+
 function getFinalSignal(asset) {
   const recommendation = normalizeAnalystRecommendation(
     asset?.analystRecommendation ?? asset?.analyst?.recommendation ?? asset?.recommendation
   );
-  const upsidePct = toNumber(asset?.upsidePct, NaN);
-  const pnlPct = toNumber(asset?.pnlPct, NaN);
-  const technicalSellPrice = toNumber(asset?.technicalSellPrice, NaN);
-  const currentPrice = toNumber(asset?.currentPrice, NaN);
-  const status = String(asset?.status || "").toUpperCase();
+  const consensus = computeAssetConsensus(asset);
 
-  const hasStrongExitStatus = status === "VENDER";
-  const hasAttentionStatus = status === "ATENCAO";
-  const isNearTechnicalSell =
-    Number.isFinite(currentPrice) &&
-    Number.isFinite(technicalSellPrice) &&
-    technicalSellPrice > 0 &&
-    currentPrice >= technicalSellPrice * 0.985;
+  const input = {
+    recommendation,
+    consensusLabel: consensus?.label ?? "-",
+    conviction: toNumber(consensus?.conviction, 0),
+    upsidePct: toNumber(asset?.upsidePct, NaN),
+    pnlPct: toNumber(asset?.pnlPct, NaN),
+    status: String(asset?.status || "").toUpperCase(),
+    currentPrice: toNumber(asset?.currentPrice, NaN),
+    technicalSellPrice: toNumber(asset?.technicalSellPrice, NaN),
+  };
 
-  const upsideNonPositive = Number.isFinite(upsidePct) && upsidePct <= 0;
-  const upsideClearlyNegative = Number.isFinite(upsidePct) && upsidePct <= -5;
-  const upsideVeryLowWithProfit = Number.isFinite(upsidePct) && upsidePct <= 5 && Number.isFinite(pnlPct) && pnlPct >= 12;
-  const lowUpsideWithProfit = Number.isFinite(upsidePct) && upsidePct <= 10 && Number.isFinite(pnlPct) && pnlPct >= 15;
-  const hasHardExitByTechnical = isNearTechnicalSell && Number.isFinite(pnlPct) && pnlPct >= 15 && Number.isFinite(upsidePct) && upsidePct <= 3;
-  const hasHardExitByAsymmetry = upsideClearlyNegative || (upsideNonPositive && Number.isFinite(pnlPct) && pnlPct >= 20);
-
-  if (
-    hasStrongExitStatus ||
-    recommendation === "VENDER" ||
-    hasHardExitByAsymmetry ||
-    hasHardExitByTechnical ||
-    (hasAttentionStatus && recommendation === "REDUZIR" && Number.isFinite(upsidePct) && upsidePct <= 8)
-  ) {
-    return "VENDER";
+  if (window.Consensus && typeof window.Consensus.decideSignal === "function") {
+    return window.Consensus.decideSignal(input);
   }
-
-  // Calibragem moderada: uma oportunidade forte de compra (consenso comprador +
-  // upside > 15%) supera alertas tecnicos leves (RSI, tendencia, perto do alvo).
-  // Continua respeitando os gatilhos fortes de saida (VENDER, ja tratado acima),
-  // uma venda tecnica iminente e um sinal real de enfraquecimento (status REDUZIR).
-  const strongBuyOpportunity =
-    recommendation === "COMPRAR" &&
-    Number.isFinite(upsidePct) &&
-    upsidePct > 15 &&
-    !isNearTechnicalSell &&
-    status !== "REDUZIR";
-  if (strongBuyOpportunity) {
-    return "COMPRAR";
-  }
-
-  // COMPRAR tambem quando aportar melhora o seu preco medio:
-  // (a) o preco atingiu a sua faixa de recompra ("Preco para comprar mais"), ou
-  // (b) o preco caiu abaixo do seu preco medio e ainda ha upside relevante,
-  // desde que o consenso nao seja negativo e nao haja gatilho forte de saida.
-  const consensusNotNegative = recommendation !== "VENDER" && recommendation !== "REDUZIR";
-  const inBuyMoreZone = status === "COMPRAR MAIS";
-  const belowAverageWithUpside =
-    Number.isFinite(pnlPct) && pnlPct < 0 &&
-    Number.isFinite(upsidePct) && upsidePct > 15;
-  if (
-    consensusNotNegative &&
-    !isNearTechnicalSell &&
-    status !== "REDUZIR" &&
-    (inBuyMoreZone || belowAverageWithUpside)
-  ) {
-    return "COMPRAR";
-  }
-
-  // Evita venda agressiva em cenarios de consenso comprador com upside positivo sem gatilho forte.
-  if (
-    recommendation === "COMPRAR" &&
-    Number.isFinite(upsidePct) &&
-    upsidePct > 0 &&
-    hasAttentionStatus
-  ) {
-    return (Number.isFinite(pnlPct) && pnlPct >= 12) ? "REDUZIR" : "MANTER";
-  }
-
-  if (
-    status === "REDUZIR" ||
-    lowUpsideWithProfit ||
-    upsideVeryLowWithProfit ||
-    (hasAttentionStatus && Number.isFinite(pnlPct) && pnlPct >= 10) ||
-    recommendation === "REDUZIR"
-  ) {
-    return "REDUZIR";
-  }
-
-  const attractiveUpside = Number.isFinite(upsidePct) && upsidePct > 15;
-  const hasStrongAlert = hasAttentionStatus || status === "REDUZIR" || status === "VENDER";
-  if (recommendation === "COMPRAR" && attractiveUpside && !hasStrongAlert && !isNearTechnicalSell) {
-    return "COMPRAR";
-  }
-
+  // Defensive fallback if the module has not loaded yet.
   return "MANTER";
 }
 
@@ -1269,12 +1205,14 @@ function getBuyReason(asset) {
   );
   const upsidePct = toNumber(asset?.upsidePct, NaN);
   const status = String(asset?.status || "").toUpperCase();
+  const consensus = computeAssetConsensus(asset);
+  const highConvictionBuy =
+    consensus?.highConviction &&
+    (consensus.label === "COMPRA FORTE" || consensus.label === "COMPRA");
 
   const analystDriven =
-    recommendation === "COMPRAR" &&
-    Number.isFinite(upsidePct) &&
-    upsidePct > 15 &&
-    status !== "REDUZIR";
+    highConvictionBuy ||
+    (recommendation === "COMPRAR" && Number.isFinite(upsidePct) && upsidePct > 15 && status !== "REDUZIR");
 
   return analystDriven ? "analistas" : "preco-medio";
 }
@@ -2366,8 +2304,11 @@ async function fetchAnalystData(ticker) {
       targetMean: toNumber(payload?.targetMean, NaN),
       targetMin: toNumber(payload?.targetMin, NaN),
       targetMax: toNumber(payload?.targetMax, NaN),
+      distribution: payload?.distribution && typeof payload.distribution === "object" ? payload.distribution : null,
       recommendation: payload?.recommendation || "-",
+      recommendationRaw: payload?.recommendationRaw || "",
       analystsCount: toNumber(payload?.analystsCount, 0),
+      stale: payload?.stale === true,
       available: true,
       source: "backend"
     };
