@@ -901,7 +901,7 @@ td.decision-cell .badge {
   }
 }
 
-.agent-radar-table th:nth-last-child(2),
-.agent-radar-table td:nth-last-child(2) {
+.agent-radar-table th:nth-last-child(3),
+.agent-radar-table td:nth-last-child(3) {
   text-align: center;
 }
