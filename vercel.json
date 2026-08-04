@@ -20,6 +20,10 @@
     {
       "src": "lib/consensus.js",
       "use": "@vercel/static"
+    },
+    {
+      "src": "lib/backup.js",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
