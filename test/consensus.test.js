@@ -63,3 +63,45 @@ test('unavailable when no data at all', () => {
   assert.equal(r.available, false)
   assert.equal(r.conviction, 0)
 })
+
+import { decideSignal } from '../lib/consensus.js'
+
+const base = {
+  recommendation: 'COMPRAR', consensusLabel: 'COMPRA', conviction: 80,
+  upsidePct: 30, pnlPct: 0, status: 'MANTER',
+  currentPrice: 10, technicalSellPrice: NaN,
+}
+
+test('high-conviction buy overrides a soft technical alert', () => {
+  assert.equal(decideSignal({ ...base, status: 'ATENCAO' }), 'COMPRAR')
+})
+
+test('hard exit (status VENDER) beats high-conviction buy', () => {
+  assert.equal(decideSignal({ ...base, status: 'VENDER' }), 'VENDER')
+})
+
+test('high-conviction VENDA FORTE => VENDER', () => {
+  assert.equal(decideSignal({ ...base, consensusLabel: 'VENDA FORTE', recommendation: 'VENDER', upsidePct: -8 }), 'VENDER')
+})
+
+test('high-conviction VENDA => REDUZIR', () => {
+  assert.equal(decideSignal({ ...base, consensusLabel: 'VENDA', recommendation: 'REDUZIR', upsidePct: 2 }), 'REDUZIR')
+})
+
+test('low conviction falls back to legacy: attention + buy with no profit => MANTER', () => {
+  assert.equal(decideSignal({ ...base, conviction: 40, status: 'ATENCAO', pnlPct: 0, upsidePct: 10 }), 'MANTER')
+})
+
+test('buy to improve average: below-average price with upside, neutral consensus => COMPRAR', () => {
+  assert.equal(
+    decideSignal({ ...base, conviction: 40, consensusLabel: 'MANTER', recommendation: 'MANTER', pnlPct: -8, upsidePct: 20 }),
+    'COMPRAR',
+  )
+})
+
+test('buy more zone (status COMPRAR MAIS) => COMPRAR', () => {
+  assert.equal(
+    decideSignal({ ...base, conviction: 30, consensusLabel: 'MANTER', recommendation: 'MANTER', status: 'COMPRAR MAIS', upsidePct: 5 }),
+    'COMPRAR',
+  )
+})
