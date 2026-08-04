@@ -1295,6 +1295,37 @@ function finalSignalBadge(signal, reason = "", label = "") {
   return `<span class="badge ${cls}" title="${title}">${text}</span>`;
 }
 
+function consensusBadge(consensus) {
+  const label = consensus?.label || "-";
+  if (!consensus || !consensus.available || label === "-") {
+    return '<span class="badge rec-na">-</span>';
+  }
+  const cls =
+    label === "COMPRA FORTE" ? "rec-strong-buy" :
+    label === "COMPRA" ? "buy" :
+    label === "MANTER" ? "hold" :
+    label === "VENDA" ? "reduce" : "sell";
+  const arrow = label === "COMPRA FORTE" ? "&#9650; " : label === "VENDA FORTE" ? "&#9660; " : "";
+  const c = consensus.components || {};
+  const tip = `${Math.round(toNumber(c.analystsCount, 0))} analistas · ` +
+    `${Math.round(toNumber(c.agreement, 0) * 100)}% concordam · ` +
+    `conviccao ${consensus.conviction}`;
+  return `<span class="badge ${cls}" title="${escapeHtml(tip)}">${arrow}${escapeHtml(label)}</span>`;
+}
+
+function convictionCell(consensus) {
+  if (!consensus || !consensus.available) {
+    return '<td class="muted-text">-</td>';
+  }
+  const v = toNumber(consensus.conviction, 0);
+  const cls = v >= 65 ? "positive" : v >= 45 ? "warn-text" : "muted-text";
+  const c = consensus.components || {};
+  const tip = `Cobertura ${Math.round(toNumber(c.coverage, 0) * 100)}% · ` +
+    `Concordancia ${Math.round(toNumber(c.agreement, 0) * 100)}% · ` +
+    `Aperto do alvo ${Math.round(toNumber(c.tightness, 0) * 100)}%`;
+  return `<td class="${cls}" title="${escapeHtml(tip)}"><strong>${v}</strong></td>`;
+}
+
 function recommendationBadge(rec) {
   const raw = String(rec || "").trim();
   const normalizedRaw = raw
@@ -1614,6 +1645,9 @@ function buildOpportunityRadar(rows) {
       source: "carteira",
       currentPrice: toNumber(row.currentPrice, NaN),
       targetMean: toNumber(row.analyst?.targetMean, NaN),
+      distribution: row.analyst?.distribution,
+      targetMin: toNumber(row.analyst?.targetMin, NaN),
+      targetMax: toNumber(row.analyst?.targetMax, NaN),
       upsidePct,
       analystsCount,
       recommendation,
@@ -1687,6 +1721,9 @@ function buildOpportunityRadar(rows) {
       source: "watchlist",
       currentPrice: toNumber(quote.price, NaN),
       targetMean: toNumber(analyst.targetMean, NaN),
+      distribution: analyst.distribution,
+      targetMin: toNumber(analyst.targetMin, NaN),
+      targetMax: toNumber(analyst.targetMax, NaN),
       upsidePct,
       analystsCount,
       recommendation,
@@ -1753,6 +1790,14 @@ function renderOpportunityRadar(rows) {
   const rowsHtml = filtered.map((item) => {
     const scoreClass = item.score >= 75 ? "positive" : item.score >= 55 ? "warn-text" : "negative";
     const upsideClass = toNumber(item.upsidePct, 0) >= 0 ? "positive" : "negative";
+    const consensus = window.Consensus && window.Consensus.computeConsensus
+      ? window.Consensus.computeConsensus({
+          distribution: item.distribution,
+          analystsCount: item.analystsCount,
+          targetMin: item.targetMin, targetMean: item.targetMean, targetMax: item.targetMax,
+          recommendationRaw: item.recommendation,
+        })
+      : { label: "-", conviction: 0, available: false };
     return `
       <tr>
         <td class="mono">${escapeHtml(item.ticker)}</td>
@@ -1762,6 +1807,7 @@ function renderOpportunityRadar(rows) {
         <td class="${upsideClass}">${fmtPct(item.upsidePct)}</td>
         <td>${fmtNumber(item.analystsCount, 0)}</td>
         <td class="${scoreClass}"><strong>${item.score}</strong></td>
+        ${convictionCell(consensus)}
         <td>${finalSignalBadge(item.finalSignal || "MANTER", item.finalSignalReason || "", item.buyReason === "preco-medio" ? "COMPRAR PM" : "")}</td>
         <td>${escapeHtml(item.actionLabel)}</td>
       </tr>
@@ -1783,6 +1829,7 @@ function renderOpportunityRadar(rows) {
               <th>Upside %</th>
               <th>Analistas</th>
               <th>Score</th>
+              <th>Convicção</th>
               <th>Sinal</th>
               <th>Acao sugerida</th>
             </tr>
@@ -3068,6 +3115,9 @@ function renderPortfolioPanel(rows) {
     .map((row) => {
       const ticker = normalizeTicker(row.asset.ticker);
       const analystRec = row.analyst.available ? row.analyst.recommendation : "";
+      const rowConsensus = window.Consensus && window.Consensus.computeConsensus
+        ? window.Consensus.computeConsensus(row.analyst)
+        : { label: "-", conviction: 0, available: false };
       const reasonText = row.finalSignalReason;
       const conflictHint = getConsensusDecisionHint(row);
       const reasonWithHint = conflictHint ? `${reasonText}. ${conflictHint}` : reasonText;
@@ -3115,7 +3165,8 @@ function renderPortfolioPanel(rows) {
           <td class="${currentPriceClass}">${fmtCurrency(toNumber(row.asset.buyMorePrice, NaN))}</td>
           <td class="${targetMeanClass}">${fmtCurrency(toNumber(row.analyst.targetMean, NaN))}</td>
           <td>${fmtCurrency(toNumber(row.analyst.targetMax, NaN))}</td>
-          <td class="consensus-cell">${recommendationBadge(analystRec)}</td>
+          <td class="consensus-cell">${consensusBadge(rowConsensus)}</td>
+          ${convictionCell(rowConsensus)}
           <td class="${toNumber(row.upsidePct, 0) >= 0 ? "positive" : "negative"}">${fmtPct(row.upsidePct)}</td>
           <td class="${technicalSellClass}">${fmtCurrency(row.technicalSellPrice)}</td>
           <td>${statusBadge(row.status)}</td>
@@ -3200,6 +3251,7 @@ function renderPortfolioPanel(rows) {
             <th>Preco-alvo analistas</th>
             <th>Alvo maximo analistas</th>
             <th class="context-col">Consenso analistas</th>
+            <th>Convicção</th>
             <th>Upside ate alvo %</th>
             <th>Preco tecnico venda</th>
             <th>Status</th>
@@ -3213,7 +3265,7 @@ function renderPortfolioPanel(rows) {
           </tr>
         </thead>
         <tbody>
-          ${rowsHtml || '<tr><td colspan="23" class="empty">Nenhum ativo cadastrado.</td></tr>'}
+          ${rowsHtml || '<tr><td colspan="24" class="empty">Nenhum ativo cadastrado.</td></tr>'}
         </tbody>
       </table>
     </div>
